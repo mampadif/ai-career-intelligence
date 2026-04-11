@@ -27,7 +27,7 @@ model = genai.GenerativeModel("gemini-2.0-flash")
 stripe.api_key = STRIPE_SECRET_KEY
 
 # ---------------------------
-# 2. Session State & Stripe Callback
+# 2. Session State
 # ---------------------------
 if "paid" not in st.session_state:
     st.session_state.paid = False
@@ -37,6 +37,10 @@ if "analysis_free" not in st.session_state:
     st.session_state.analysis_free = None
 if "manual_job_query" not in st.session_state:
     st.session_state.manual_job_query = ""
+if "displayed_jobs_free" not in st.session_state:
+    st.session_state.displayed_jobs_free = []
+if "displayed_jobs_pro" not in st.session_state:
+    st.session_state.displayed_jobs_pro = []
 
 if "success" in st.query_params:
     st.session_state.paid = True
@@ -55,9 +59,33 @@ def extract_text_from_file(uploaded_file):
     else:
         return uploaded_file.read().decode("utf-8")
 
-def clean_json_response(text):
-    match = re.search(r'\{.*\}', text, re.DOTALL)
-    return match.group(0) if match else text
+def clean_json_response(text: str) -> str:
+    """Safe JSON extractor - handles markdown and finds first/last valid JSON"""
+    text = text.strip()
+    
+    # Remove markdown code blocks
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    
+    # Find first { and last } for object
+    start_obj = text.find("{")
+    end_obj = text.rfind("}")
+    # Find first [ and last ] for array
+    start_arr = text.find("[")
+    end_arr = text.rfind("]")
+    
+    obj_candidate = text[start_obj:end_obj + 1] if start_obj != -1 and end_obj != -1 else ""
+    arr_candidate = text[start_arr:end_arr + 1] if start_arr != -1 and end_arr != -1 else ""
+    
+    # Return the larger candidate (likely the full response)
+    if obj_candidate and arr_candidate:
+        return obj_candidate if len(obj_candidate) >= len(arr_candidate) else arr_candidate
+    if obj_candidate:
+        return obj_candidate
+    if arr_candidate:
+        return arr_candidate
+    return text
 
 def analyze_cv(cv_text, full=False):
     prompt = f"""
@@ -100,7 +128,7 @@ def analyze_cv(cv_text, full=False):
 def analyze_cv_cached(cv_text, full=False):
     return analyze_cv(cv_text, full)
 
-@st.cache_data(ttl=3600)   # <-- FIX: cache job query generation
+@st.cache_data(ttl=3600)
 def generate_job_query(cv_text):
     prompt = f"""
     Extract 3 likely job titles from this CV.
@@ -111,17 +139,8 @@ def generate_job_query(cv_text):
     """
     return model.generate_content(prompt).text.strip()
 
-def get_job_matches(cv_text, analysis, manual_query, country_code, location_refine, limit=3):
-    query = generate_job_query(cv_text)
-    if manual_query and len(manual_query) > 2:
-        query = manual_query
-    elif not query or len(query) < 3:
-        target_roles = analysis.get('target_roles', [])
-        if target_roles and target_roles[0] != "N/A":
-            query = target_roles[0]
-        else:
-            return []
-    
+def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
+    """Get jobs from Adzuna API (reliable, tested)"""
     url = f"https://api.adzuna.com/v1/api/jobs/{country_code}/search/1"
     params = {
         "app_id": ADZUNA_APP_ID,
@@ -140,12 +159,29 @@ def get_job_matches(cv_text, analysis, manual_query, country_code, location_refi
             return [{
                 "title": j["title"],
                 "company": j["company"]["display_name"],
+                "location": location_refine or country_code.upper(),
                 "url": j["redirect_url"],
                 "description": j.get("description", "")
             } for j in jobs]
     except Exception as e:
-        st.error(f"Job search error: {e}")
+        st.warning(f"Job search error: {e}")
     return []
+
+def get_job_matches(cv_text, analysis, manual_query, country_code, location_refine, limit=5):
+    """Get jobs from Adzuna"""
+    # Determine search query
+    query = manual_query
+    if not query or len(query) < 3:
+        target_roles = analysis.get('target_roles', [])
+        if target_roles and target_roles[0] != "N/A":
+            query = target_roles[0]
+        else:
+            query = generate_job_query(cv_text)
+    
+    if not query or len(query) < 3:
+        return []
+    
+    return get_jobs_from_adzuna(query, country_code, location_refine, limit)
 
 @st.cache_data(ttl=3600)
 def score_job_match(cv_text, job_title, job_description=""):
@@ -155,6 +191,19 @@ def score_job_match(cv_text, job_title, job_description=""):
         return int(response.text.strip())
     except:
         return 50
+
+@st.cache_data(ttl=3600)
+def get_missing_keywords_preview(cv_text):
+    """Get 2-3 real missing keywords for free preview"""
+    prompt = f"""
+    From this CV, identify 2-3 specific keywords that are missing that recruiters would expect.
+    Return ONLY a comma-separated list.
+    No explanation.
+    CV:
+    {cv_text[:5000]}
+    """
+    response = model.generate_content(prompt)
+    return response.text.strip()
 
 def safe_encode(text):
     return text.encode('latin-1', 'ignore').decode('latin-1')
@@ -186,10 +235,10 @@ def generate_ats_checklist(analysis_full):
 # 4. UI
 # ---------------------------
 st.title("📈 AI Career Intelligence")
-st.markdown("Upload your CV → Get ATS score, recruiter verdict, and personalized job matches worldwide.")
+st.markdown("Upload your CV → Get ATS score, recruiter verdict, and job matches from top job boards.")
 
 if not st.session_state.paid:
-    st.info("🔓 **Upgrade to Pro** – Unlock full rewrite suggestions, missing keywords, unlimited job matches, and PDF export.")
+    st.info("🔓 **Upgrade to Pro** – Unlock full rewrite suggestions, missing keywords, and more job matches.")
 
 uploaded_file = st.file_uploader("Upload your CV (PDF or DOCX)", type=["pdf", "docx"])
 
@@ -219,62 +268,84 @@ if uploaded_file:
 
     # Job search settings
     st.subheader("🌍 Job Search Settings")
+    
     col_loc1, col_loc2 = st.columns(2)
     with col_loc1:
         country_code = st.selectbox(
             "Country",
-            options=[
-                "us", "gb", "ca", "au", "de", "fr", "in", "za", "es", "it", "nl", 
-                "br", "mx", "sg", "ae", "pl", "se", "no", "dk", "fi", "ch", "at", 
-                "be", "ie", "nz", "hk", "my", "ph", "th", "vn", "id", "kr", "jp", 
-                "tr", "il", "sa", "eg", "ma", "ng", "ke", "pk", "lk", "np", "bd", 
-                "ua", "ro", "cz", "hu", "gr", "pt", "ar", "cl", "co", "pe", "ve", 
-                "cr", "pa", "do", "pr"
-            ],
+            options=["us", "gb", "ca", "au", "de", "fr", "in", "za", "ng", "ke"],
             format_func=lambda x: {
-                "us": "United States", "gb": "United Kingdom", "ca": "Canada", 
-                "au": "Australia", "de": "Germany", "fr": "France", "in": "India", 
-                "za": "South Africa", "es": "Spain", "it": "Italy", "nl": "Netherlands",
-                "br": "Brazil", "mx": "Mexico", "sg": "Singapore", "ae": "UAE",
-                "pl": "Poland", "se": "Sweden", "no": "Norway", "dk": "Denmark",
-                "fi": "Finland", "ch": "Switzerland", "at": "Austria", "be": "Belgium",
-                "ie": "Ireland", "nz": "New Zealand", "hk": "Hong Kong", "my": "Malaysia",
-                "ph": "Philippines", "th": "Thailand", "vn": "Vietnam", "id": "Indonesia",
-                "kr": "South Korea", "jp": "Japan", "tr": "Turkey", "il": "Israel",
-                "sa": "Saudi Arabia", "eg": "Egypt", "ma": "Morocco", "ng": "Nigeria",
-                "ke": "Kenya", "pk": "Pakistan", "lk": "Sri Lanka", "np": "Nepal",
-                "bd": "Bangladesh", "ua": "Ukraine", "ro": "Romania", "cz": "Czech Republic",
-                "hu": "Hungary", "gr": "Greece", "pt": "Portugal", "ar": "Argentina",
-                "cl": "Chile", "co": "Colombia", "pe": "Peru", "ve": "Venezuela",
-                "cr": "Costa Rica", "pa": "Panama", "do": "Dominican Republic", "pr": "Puerto Rico"
+                "us": "United States", "gb": "United Kingdom", "ca": "Canada",
+                "au": "Australia", "de": "Germany", "fr": "France", "in": "India",
+                "za": "South Africa", "ng": "Nigeria", "ke": "Kenya"
             }.get(x, x.upper()),
-            index=0
+            index=0,
+            key="country_select"
         )
     with col_loc2:
-        location_refine = st.text_input("City / Region (optional)", placeholder="e.g., Gaborone, Cape Town, Remote")
-
-    if country_code == "za":
-        st.caption("🇿🇦 South Africa has strong job coverage. For other African countries, select South Africa and specify your city/region.")
-    elif country_code in ["eg", "ma", "ng", "ke"]:
-        st.caption(f"✅ Job coverage available for {country_code.upper()}.")
-    else:
-        st.caption("🌍 For African countries not listed, select 'South Africa' and specify your city/region in the field above.")
+        location_refine = st.text_input(
+            "City / Region (optional)", 
+            placeholder="e.g., London, Lagos, Nairobi",
+            key="location_input"
+        )
 
     manual_query = st.text_input(
-        "Optional: Override detected job title (e.g., 'Registered Nurse', 'Marketing Manager')",
+        "Override job title (optional)",
         value=st.session_state.manual_job_query,
+        placeholder="e.g., Registered Nurse, Marketing Manager",
         key="manual_job_input"
     )
     st.session_state.manual_job_query = manual_query
 
-    # Free job matches (3, no scores)
-    st.subheader("💼 Matching Jobs (Preview)")
-    free_jobs = get_job_matches(cv_text, analysis, manual_query, country_code, location_refine, limit=3)
-    if free_jobs:
-        for job in free_jobs:
-            st.markdown(f"**{job['title']}** at {job['company']} – [Apply]({job['url']})")
+    # SEARCH BUTTON
+    col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
+    with col_btn2:
+        search_clicked = st.button("🔍 Search for Jobs", use_container_width=True, type="primary")
+    
+    # Job matches section
+    st.subheader("💼 Matching Jobs")
+    
+    # Consistent limits: FREE = 3 jobs, PRO = 20 jobs
+    job_limit = 3 if not st.session_state.paid else 20
+    
+    if search_clicked:
+        with st.spinner("Searching for jobs..."):
+            jobs = get_job_matches(
+                cv_text, analysis, manual_query, 
+                country_code, location_refine, 
+                limit=job_limit
+            )
+            if not st.session_state.paid:
+                st.session_state.displayed_jobs_free = jobs
+            else:
+                st.session_state.displayed_jobs_pro = jobs
+        
+        display_jobs = jobs
     else:
-        st.warning("No jobs found. Try adjusting job title or location.")
+        # Show previously found jobs
+        display_jobs = st.session_state.displayed_jobs_free if not st.session_state.paid else st.session_state.displayed_jobs_pro
+    
+    if display_jobs:
+        for idx, job in enumerate(display_jobs):
+            with st.expander(f"**{job['title']}** at {job['company']}"):
+                st.markdown(f"📍 **Location:** {job.get('location', 'Not specified')}")
+                if job.get('description'):
+                    st.markdown(f"📝 **Description:** {job['description'][:300]}...")
+                if not st.session_state.paid:
+                    st.caption("🔒 **Full match score available after upgrade**")
+                else:
+                    if st.button(f"🎯 Show Match Score", key=f"score_btn_{idx}"):
+                        match_score = score_job_match(cv_text, job['title'], job.get('description', ''))
+                        st.write(f"**Match Score:** {match_score}%")
+                st.markdown(f"[Apply Now]({job['url']})")
+        
+        if not st.session_state.paid and len(display_jobs) >= 3:
+            st.info("🔓 **Upgrade to Pro** to see 20+ jobs and get AI match scores!")
+    else:
+        if search_clicked:
+            st.warning("No jobs found. Try adjusting the job title or location.")
+        else:
+            st.info("👆 Click 'Search for Jobs' to find opportunities.")
 
     # ---------------------------
     # CONVERSION SECTION (Upgrade)
@@ -288,12 +359,13 @@ if uploaded_file:
         c2.write("📝 **Bullet Point Rewrites**\nProfessional AI‑rewritten achievements.")
         c3.write("📑 **Executive PDF**\nDownloadable report for your records.")
 
-        st.markdown("#### 🔒 Pro Preview: Missing Keywords")
-        st.info("`Docker`, `AWS`, `Power BI`, `Leadership metrics` (UPGRADE TO SEE YOURS)")
+        st.markdown("#### 🔒 Pro Preview: Missing Keywords We Found")
+        with st.spinner("Analyzing your keyword gaps..."):
+            real_preview = get_missing_keywords_preview(cv_text)
+        st.info(f"`{real_preview}` (UPGRADE TO SEE ALL KEYWORDS + REWRITES)")
 
         col_left, col_right = st.columns(2)
         with col_left:
-            # Updated button text
             if st.button("💳 Unlock Full Career Optimization – $9"):
                 try:
                     checkout_session = stripe.checkout.Session.create(
@@ -337,24 +409,38 @@ if uploaded_file:
             checklist_text = generate_ats_checklist(full_analysis)
             st.download_button("📋 Download ATS Checklist", checklist_text, file_name="ats_checklist.txt")
 
-        st.subheader("🚀 AI‑Ranked Job Matches (Pro)")
-        with st.spinner("Finding jobs..."):
-            pro_jobs = get_job_matches(cv_text, full_analysis, manual_query, country_code, location_refine, limit=15)
-        if pro_jobs:
-            for idx, job in enumerate(pro_jobs):
-                with st.expander(f"**{job['title']}** at {job['company']}"):
-                    if st.button(f"🔍 Show Match Score", key=f"score_btn_{idx}"):
-                        match_score = score_job_match(cv_text, job['title'], job.get('description', ''))
-                        st.write(f"**AI Match Score:** {match_score}%")
-                        st.markdown(f"[Apply Now]({job['url']})")
-                    else:
-                        st.markdown(f"[Apply without AI analysis]({job['url']})")
+        st.subheader("🚀 Pro Job Matches (20+ jobs)")
+        
+        col_btn1p, col_btn2p, col_btn3p = st.columns([1, 2, 1])
+        with col_btn2p:
+            search_pro_clicked = st.button("🔍 Search for Jobs (Pro)", use_container_width=True, type="primary")
+        
+        if search_pro_clicked:
+            with st.spinner("Searching for jobs..."):
+                pro_jobs = get_job_matches(cv_text, full_analysis, manual_query, country_code, location_refine, limit=20)
+                st.session_state.displayed_jobs_pro = pro_jobs
+            display_pro_jobs = pro_jobs
         else:
-            st.warning("No jobs found. Try adjusting job title or location.")
-        st.info("📧 Email alerts for new jobs – coming soon.")
+            display_pro_jobs = st.session_state.displayed_jobs_pro
+        
+        if display_pro_jobs:
+            for idx, job in enumerate(display_pro_jobs):
+                with st.expander(f"**{job['title']}** at {job['company']}"):
+                    st.markdown(f"📍 **Location:** {job.get('location', 'Not specified')}")
+                    if job.get('description'):
+                        st.markdown(f"📝 **Description:** {job['description'][:400]}...")
+                    if st.button(f"🎯 Show Match Score", key=f"score_btn_pro_{idx}"):
+                        match_score = score_job_match(cv_text, job['title'], job.get('description', ''))
+                        st.write(f"**Match Score:** {match_score}%")
+                    st.markdown(f"[Apply Now]({job['url']})")
+        else:
+            if search_pro_clicked:
+                st.warning("No jobs found. Try adjusting job title or location.")
+            else:
+                st.info("👆 Click 'Search for Jobs (Pro)' to find opportunities.")
 
 else:
     st.info("👆 Please upload your CV to begin.")
 
 st.markdown("---")
-st.caption("AI Career Intelligence – Powered by Gemini 2.0 | Job data by Adzuna")
+st.caption("AI Career Intelligence – Powered by Gemini 2.0 | Job data via Adzuna")
