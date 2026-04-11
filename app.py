@@ -23,7 +23,7 @@ APP_URL = st.secrets["APP_URL"]
 PRO_UNLOCK_CODE = st.secrets["PRO_UNLOCK_CODE"]
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-2.0-flash-exp")
+model = genai.GenerativeModel("gemini-2.0-flash")
 stripe.api_key = STRIPE_SECRET_KEY
 
 # ---------------------------
