@@ -23,7 +23,9 @@ APP_URL = st.secrets["APP_URL"]
 PRO_UNLOCK_CODE = st.secrets["PRO_UNLOCK_CODE"]
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-2.0-flash")
+# CRITICAL: Using gemini-2.5-flash (stable, no shutdown until at least 2027)
+# gemini-2.0-flash is scheduled for shutdown on June 1, 2026
+model = genai.GenerativeModel("gemini-2.5-flash")
 stripe.api_key = STRIPE_SECRET_KEY
 
 # ---------------------------
@@ -139,13 +141,24 @@ def generate_job_query(cv_text):
     """
     return model.generate_content(prompt).text.strip()
 
+def deduplicate_jobs(jobs):
+    """Remove duplicate jobs based on title and company"""
+    seen = set()
+    unique_jobs = []
+    for job in jobs:
+        unique_key = f"{job.get('title', '')}_{job.get('company', '')}".lower()
+        if unique_key not in seen:
+            seen.add(unique_key)
+            unique_jobs.append(job)
+    return unique_jobs
+
 def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
-    """Get jobs from Adzuna API (reliable, tested)"""
+    """Get jobs from Adzuna API with deduplication and safe field access"""
     url = f"https://api.adzuna.com/v1/api/jobs/{country_code}/search/1"
     params = {
         "app_id": ADZUNA_APP_ID,
         "app_key": JOB_API_KEY,
-        "results_per_page": limit,
+        "results_per_page": limit * 2,
         "what": query,
         "content-type": "json"
     }
@@ -156,20 +169,67 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
         resp = requests.get(url, params=params, timeout=10)
         if resp.status_code == 200:
             jobs = resp.json().get("results", [])
-            return [{
-                "title": j["title"],
-                "company": j["company"]["display_name"],
-                "location": location_refine or country_code.upper(),
-                "url": j["redirect_url"],
-                "description": j.get("description", "")
-            } for j in jobs]
+            formatted_jobs = []
+            for j in jobs:
+                # SAFE: Handle missing 'display_name' key
+                company = j.get("company", {})
+                if isinstance(company, dict):
+                    company_name = company.get("display_name", "Unknown Company")
+                else:
+                    company_name = str(company) if company else "Unknown Company"
+                
+                formatted_jobs.append({
+                    "title": j.get("title", "Untitled Position"),
+                    "company": company_name,
+                    "location": location_refine or country_code.upper(),
+                    "url": j.get("redirect_url", "#"),
+                    "description": j.get("description", "")
+                })
+            unique_jobs = deduplicate_jobs(formatted_jobs)
+            return unique_jobs[:limit]
+        else:
+            return []
     except Exception as e:
-        st.warning(f"Job search error: {e}")
-    return []
+        st.warning(f"Adzuna error: {e}")
+        return []
 
-def get_job_matches(cv_text, analysis, manual_query, country_code, location_refine, limit=5):
-    """Get jobs from Adzuna"""
-    # Determine search query
+def get_jobs_from_gemini_search(cv_text, job_title, location, limit=5):
+    """Use Gemini for countries not supported by Adzuna (Botswana, Ghana, etc.)"""
+    try:
+        prompt = f"""
+        Find {limit} recent, UNIQUE job postings for a {job_title} position in {location}.
+        
+        Return ONLY valid JSON in this format:
+        {{
+            "jobs": [
+                {{
+                    "job_title": "...",
+                    "company_name": "...",
+                    "location": "...",
+                    "apply_url": "...",
+                    "brief_description": "..."
+                }}
+            ]
+        }}
+        """
+        response = model.generate_content(prompt)
+        raw = clean_json_response(response.text)
+        result = json.loads(raw)
+        jobs = result.get('jobs', [])
+        
+        return [{
+            "title": job.get("job_title", "Untitled"),
+            "company": job.get("company_name", "Unknown Company"),
+            "location": job.get("location", location),
+            "url": job.get("apply_url", "#"),
+            "description": job.get("brief_description", "")
+        } for job in jobs]
+    except Exception as e:
+        st.warning(f"Gemini search error: {e}")
+        return []
+
+def get_job_matches(cv_text, analysis, manual_query, country_code, country_name, location_refine, limit=5):
+    """Get jobs with support for all countries"""
     query = manual_query
     if not query or len(query) < 3:
         target_roles = analysis.get('target_roles', [])
@@ -181,7 +241,12 @@ def get_job_matches(cv_text, analysis, manual_query, country_code, location_refi
     if not query or len(query) < 3:
         return []
     
-    return get_jobs_from_adzuna(query, country_code, location_refine, limit)
+    # For "other" countries, use Gemini Search (Botswana, Ghana, etc.)
+    if country_code == "other":
+        search_location = f"{location_refine}, {country_name}" if location_refine else country_name
+        return get_jobs_from_gemini_search(cv_text, query, search_location, limit)
+    else:
+        return get_jobs_from_adzuna(query, country_code, location_refine, limit)
 
 @st.cache_data(ttl=3600)
 def score_job_match(cv_text, job_title, job_description=""):
@@ -194,7 +259,6 @@ def score_job_match(cv_text, job_title, job_description=""):
 
 @st.cache_data(ttl=3600)
 def get_missing_keywords_preview(cv_text):
-    """Get 2-3 real missing keywords for free preview"""
     prompt = f"""
     From this CV, identify 2-3 specific keywords that are missing that recruiters would expect.
     Return ONLY a comma-separated list.
@@ -235,7 +299,7 @@ def generate_ats_checklist(analysis_full):
 # 4. UI
 # ---------------------------
 st.title("📈 AI Career Intelligence")
-st.markdown("Upload your CV → Get ATS score, recruiter verdict, and job matches from top job boards.")
+st.markdown("Upload your CV → Get ATS score, recruiter verdict, and job matches worldwide.")
 
 if not st.session_state.paid:
     st.info("🔓 **Upgrade to Pro** – Unlock full rewrite suggestions, missing keywords, and more job matches.")
@@ -250,7 +314,7 @@ if uploaded_file:
         analysis = analyze_cv_cached(cv_text, full=False)
         st.session_state.analysis_free = analysis
 
-    # Metrics row
+    # Metrics
     col1, col2, col3 = st.columns(3)
     col1.metric("📊 Strength Score", f"{analysis['strength_score']}/100")
     col2.metric("🤖 ATS Score", f"{analysis['ats_score']}/100")
@@ -269,12 +333,13 @@ if uploaded_file:
     # Job search settings
     st.subheader("🌍 Job Search Settings")
     
-    col_loc1, col_loc2 = st.columns(2)
+    col_loc1, col_loc2, col_loc3 = st.columns([2, 2, 1])
     with col_loc1:
-        country_code = st.selectbox(
+        country_option = st.selectbox(
             "Country",
-            options=["us", "gb", "ca", "au", "de", "fr", "in", "za", "ng", "ke"],
+            options=["other", "us", "gb", "ca", "au", "de", "fr", "in", "za", "ng", "ke"],
             format_func=lambda x: {
+                "other": "🌍 Other Country (Botswana, Ghana, Zimbabwe, etc.)",
                 "us": "United States", "gb": "United Kingdom", "ca": "Canada",
                 "au": "Australia", "de": "Germany", "fr": "France", "in": "India",
                 "za": "South Africa", "ng": "Nigeria", "ke": "Kenya"
@@ -285,9 +350,17 @@ if uploaded_file:
     with col_loc2:
         location_refine = st.text_input(
             "City / Region (optional)", 
-            placeholder="e.g., London, Lagos, Nairobi",
+            placeholder="e.g., Gaborone, London, Nairobi",
             key="location_input"
         )
+    
+    if country_option == "other":
+        with col_loc3:
+            country_name = st.text_input("Country name", placeholder="Botswana, Ghana...", key="other_country")
+        if country_name and "botswana" in country_name.lower():
+            st.success("🇧🇼 Botswana selected! We'll search the web for jobs in Botswana.")
+    else:
+        country_name = country_option.upper()
 
     manual_query = st.text_input(
         "Override job title (optional)",
@@ -297,32 +370,31 @@ if uploaded_file:
     )
     st.session_state.manual_job_query = manual_query
 
-    # SEARCH BUTTON
+    # Search button
     col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
     with col_btn2:
         search_clicked = st.button("🔍 Search for Jobs", use_container_width=True, type="primary")
     
-    # Job matches section
     st.subheader("💼 Matching Jobs")
     
-    # Consistent limits: FREE = 3 jobs, PRO = 20 jobs
     job_limit = 3 if not st.session_state.paid else 20
     
     if search_clicked:
-        with st.spinner("Searching for jobs..."):
-            jobs = get_job_matches(
-                cv_text, analysis, manual_query, 
-                country_code, location_refine, 
-                limit=job_limit
-            )
-            if not st.session_state.paid:
-                st.session_state.displayed_jobs_free = jobs
-            else:
-                st.session_state.displayed_jobs_pro = jobs
-        
-        display_jobs = jobs
+        if country_option == "other" and not country_name:
+            st.error("Please enter your country name (e.g., Botswana)")
+        else:
+            with st.spinner("Searching for jobs..."):
+                jobs = get_job_matches(
+                    cv_text, analysis, manual_query, 
+                    country_option, country_name, location_refine, 
+                    limit=job_limit
+                )
+                if not st.session_state.paid:
+                    st.session_state.displayed_jobs_free = jobs
+                else:
+                    st.session_state.displayed_jobs_pro = jobs
+            display_jobs = jobs
     else:
-        # Show previously found jobs
         display_jobs = st.session_state.displayed_jobs_free if not st.session_state.paid else st.session_state.displayed_jobs_pro
     
     if display_jobs:
@@ -343,27 +415,27 @@ if uploaded_file:
             st.info("🔓 **Upgrade to Pro** to see 20+ jobs and get AI match scores!")
     else:
         if search_clicked:
-            st.warning("No jobs found. Try adjusting the job title or location.")
+            st.warning("No jobs found. Try adjusting the job title, country, or location.")
         else:
             st.info("👆 Click 'Search for Jobs' to find opportunities.")
 
     # ---------------------------
-    # CONVERSION SECTION (Upgrade)
+    # CONVERSION SECTION
     # ---------------------------
     if not st.session_state.paid:
         st.markdown("---")
         st.header("🏆 Unlock the Pro Career Suite")
-
+        
         c1, c2, c3 = st.columns(3)
         c1.write("🎯 **ATS Optimization**\nGet the exact keywords missing from your CV.")
         c2.write("📝 **Bullet Point Rewrites**\nProfessional AI‑rewritten achievements.")
         c3.write("📑 **Executive PDF**\nDownloadable report for your records.")
-
+        
         st.markdown("#### 🔒 Pro Preview: Missing Keywords We Found")
         with st.spinner("Analyzing your keyword gaps..."):
             real_preview = get_missing_keywords_preview(cv_text)
         st.info(f"`{real_preview}` (UPGRADE TO SEE ALL KEYWORDS + REWRITES)")
-
+        
         col_left, col_right = st.columns(2)
         with col_left:
             if st.button("💳 Unlock Full Career Optimization – $9"):
@@ -384,7 +456,7 @@ if uploaded_file:
                 st.session_state.paid = True
                 st.success("Pro access granted! Refreshing...")
                 st.rerun()
-
+    
     # ---------------------------
     # PAID SECTION
     # ---------------------------
@@ -393,14 +465,14 @@ if uploaded_file:
         st.success("✅ Pro access unlocked – generating your full report...")
         with st.spinner("Creating detailed improvement plan..."):
             full_analysis = analyze_cv_cached(cv_text, full=True)
-
+        
         st.subheader("🔑 Missing ATS Keywords")
         st.markdown(", ".join(full_analysis.get('missing_keywords', [])))
-
+        
         st.subheader("✍️ Rewrite Suggestions")
         for sug in full_analysis.get('rewrite_suggestions', []):
             st.markdown(f"- {sug}")
-
+        
         col_pdf, col_check = st.columns(2)
         with col_pdf:
             pdf_data = generate_pdf_report(full_analysis)
@@ -408,7 +480,7 @@ if uploaded_file:
         with col_check:
             checklist_text = generate_ats_checklist(full_analysis)
             st.download_button("📋 Download ATS Checklist", checklist_text, file_name="ats_checklist.txt")
-
+        
         st.subheader("🚀 Pro Job Matches (20+ jobs)")
         
         col_btn1p, col_btn2p, col_btn3p = st.columns([1, 2, 1])
@@ -416,10 +488,13 @@ if uploaded_file:
             search_pro_clicked = st.button("🔍 Search for Jobs (Pro)", use_container_width=True, type="primary")
         
         if search_pro_clicked:
-            with st.spinner("Searching for jobs..."):
-                pro_jobs = get_job_matches(cv_text, full_analysis, manual_query, country_code, location_refine, limit=20)
-                st.session_state.displayed_jobs_pro = pro_jobs
-            display_pro_jobs = pro_jobs
+            if country_option == "other" and not country_name:
+                st.error("Please enter your country name (e.g., Botswana)")
+            else:
+                with st.spinner("Searching for jobs..."):
+                    pro_jobs = get_job_matches(cv_text, full_analysis, manual_query, country_option, country_name, location_refine, limit=20)
+                    st.session_state.displayed_jobs_pro = pro_jobs
+                display_pro_jobs = pro_jobs
         else:
             display_pro_jobs = st.session_state.displayed_jobs_pro
         
@@ -443,4 +518,4 @@ else:
     st.info("👆 Please upload your CV to begin.")
 
 st.markdown("---")
-st.caption("AI Career Intelligence – Powered by Gemini 2.0 | Job data via Adzuna")
+st.caption("AI Career Intelligence – Powered by Gemini 2.5 Flash | No duplicates | Global coverage including Botswana")
