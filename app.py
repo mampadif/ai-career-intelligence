@@ -29,11 +29,10 @@ PREMIUM_UNLOCK_CODE = st.secrets["PREMIUM_UNLOCK_CODE"]
 PRO_UNLOCK_CODE = st.secrets["PRO_UNLOCK_CODE"]
 
 genai.configure(api_key=GEMINI_API_KEY)
-# Stable model – gemini-2.5-flash (no near-term deprecation)
 model = genai.GenerativeModel("gemini-2.5-flash")
 stripe.api_key = STRIPE_SECRET_KEY
 
-# Country mapping (display names to Adzuna codes)
+# Country mapping
 COUNTRY_MAP = {
     "United States": "us",
     "United Kingdom": "gb",
@@ -51,7 +50,7 @@ COUNTRY_MAP = {
 }
 
 # ---------------------------
-# 2. Custom CSS (Professional SaaS Look)
+# 2. Custom CSS
 # ---------------------------
 st.markdown("""
 <style>
@@ -119,7 +118,7 @@ body { background-color: #f7f9fc; }
 """, unsafe_allow_html=True)
 
 # ---------------------------
-# 3. Session State Initialization
+# 3. Session State
 # ---------------------------
 if "premium" not in st.session_state:
     st.session_state.premium = False
@@ -146,7 +145,6 @@ if "cover_letter_analysis" not in st.session_state:
 if "cover_letter_text" not in st.session_state:
     st.session_state.cover_letter_text = ""
 
-# Stripe success callbacks
 if "success_premium_monthly" in st.query_params:
     st.session_state.premium = True
     st.query_params.clear()
@@ -174,7 +172,6 @@ def extract_text_from_file(uploaded_file):
         return uploaded_file.read().decode("utf-8")
 
 def clean_json_response(text: str) -> str:
-    """Safer JSON extraction – handles markdown and finds first/last valid JSON."""
     text = text.strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
@@ -201,7 +198,7 @@ def analyze_cv(cv_text, full=False):
     - strength_score: 0-100
     - ats_score: 0-100
     - interview_likelihood: "Low","Moderate","High"
-    - recruiter_verdict: one sentence explaining the scores, especially if ATS high but interview low
+    - recruiter_verdict: one sentence explaining the scores
     - experience_level: "Entry","Mid","Senior"
     - target_roles: list of 2-3
     - top_strengths: list of 2-3
@@ -240,7 +237,6 @@ def get_interview_percentage(likelihood):
 
 @st.cache_data(ttl=3600)
 def analyze_cover_letter_full(letter_text, target_role):
-    """Full analysis with dimension scores (for Premium/Pro)"""
     prompt = f"""
     Evaluate this cover letter for a {target_role} position.
     Return ONLY valid JSON:
@@ -265,7 +261,6 @@ def analyze_cover_letter_full(letter_text, target_role):
 
 @st.cache_data(ttl=3600)
 def review_cover_letter_basic(letter_text, target_role):
-    """Simplified review for free tier (only score, verdict, one missing element)"""
     prompt = f"""
     Review this cover letter for a {target_role} position.
     Return JSON: {{"overall_score": 0-100, "verdict": "one sentence", "top_missing": "single element"}}
@@ -285,7 +280,6 @@ def generate_cover_letter(cv_text, target_role, company_name=""):
     Write a professional cover letter for a {target_role} position{company_text}.
     Base it on the candidate's CV below. DO NOT invent experience.
     Return ONLY the cover letter as plain text (250-350 words).
-
     CV:
     {cv_text[:8000]}
     """
@@ -294,7 +288,6 @@ def generate_cover_letter(cv_text, target_role, company_name=""):
 
 @st.cache_data(ttl=3600)
 def generate_job_query(cv_text):
-    """Extract single best job title from CV."""
     prompt = f"""
     Extract the single best job title from this CV.
     Return ONLY one title.
@@ -314,7 +307,6 @@ def deduplicate_jobs(jobs):
     return unique
 
 def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
-    """Primary job source – Adzuna API with visible error handling."""
     url = f"https://api.adzuna.com/v1/api/jobs/{country_code}/search/1"
     params = {
         "app_id": ADZUNA_APP_ID,
@@ -357,14 +349,11 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
                 })
             return deduplicate_jobs(formatted)[:limit]
         else:
-            st.error(f"Adzuna API error {resp.status_code}")
             return []
     except Exception as e:
-        st.error(f"Adzuna search failed: {e}")
         return []
 
 def get_jobs_from_gemini_search(cv_text, job_title, location, limit=5):
-    """Fallback for other countries (Botswana, etc.) – uses Gemini to generate job listings."""
     try:
         prompt = f"""
         Find {limit} recent job postings for a {job_title} position in {location}.
@@ -394,50 +383,57 @@ def get_jobs_from_gemini_search(cv_text, job_title, location, limit=5):
             "date_display": "📅 Recently posted",
             "is_expired": False
         } for j in jobs]
-    except Exception as e:
-        st.error(f"Gemini fallback search failed: {e}")
+    except:
         return []
 
 def get_job_matches(cv_text, analysis, manual_query, country_name, country_code, location_refine, limit=5):
-    """Hybrid job search: Adzuna first, then Gemini fallback for other countries or if Adzuna fails."""
-    query = manual_query.strip() if manual_query else ""
-    if not query:
-        target_roles = analysis.get("target_roles", [])
-        if target_roles and target_roles[0] != "N/A":
-            query = target_roles[0]
-        else:
-            query = generate_job_query(cv_text).strip()
-    # Normalize – take only first role if comma-separated
+    """CV-FIRST: Always prioritize detected roles from CV analysis"""
+    # PRIORITY 1: CV-detected roles from Gemini
+    target_roles = analysis.get("target_roles", [])
+    
+    if target_roles and target_roles[0] != "N/A":
+        query = target_roles[0]
+        source = "CV analysis"
+    else:
+        query = generate_job_query(cv_text).strip()
+        source = "CV text extraction"
+    
+    # Manual override (optional, with warning)
+    if manual_query and len(manual_query.strip()) > 2:
+        st.warning(f"⚠️ Overriding CV-detected role '{query}' with '{manual_query}'. This may return less relevant jobs.")
+        query = manual_query.strip()
+        source = "manual override"
+    
     if "," in query:
         query = query.split(",")[0].strip()
+    
     if not query or len(query) < 3:
-        st.error("Could not determine a valid job title to search for.")
+        st.error("Could not determine a valid job title from your CV.")
         return []
-    # Show what we're searching for
-    st.info(f"🔍 Searching for: **{query}** in {country_name if country_name != 'Other' else country_code.upper()}")
+    
+    st.success(f"🎯 Searching for: **{query}** (from {source}) in {country_name if country_name != 'Other' else country_code.upper()}")
+    
     adzuna_supported = ["us", "gb", "ca", "au", "de", "fr", "in", "za"]
+    
     if country_code in adzuna_supported:
         jobs = get_jobs_from_adzuna(query, country_code, location_refine, limit)
         if not jobs:
-            st.warning("No jobs found via Adzuna for this query. Trying fallback search...")
-            # Fallback to Gemini search for better coverage
+            st.warning(f"No {query} jobs found via Adzuna. Trying expanded search...")
             search_location = f"{location_refine}, {country_name}" if location_refine else country_name
             jobs = get_jobs_from_gemini_search(cv_text, query, search_location, limit)
         return jobs
     else:
-        # "other" country or non-Adzuna country: use Gemini fallback
         if not country_name or country_name == "Other":
             st.error("Please enter a specific country name for 'Other' selection.")
             return []
         search_location = f"{location_refine}, {country_name}" if location_refine else country_name
         jobs = get_jobs_from_gemini_search(cv_text, query, search_location, limit)
         if not jobs:
-            st.warning("No jobs found via AI search. Try a different country or job title.")
+            st.warning(f"No {query} jobs found. Try a different country.")
         return jobs
 
 @st.cache_data(ttl=3600)
 def score_job_match(cv_text, job_title, job_description=""):
-    """Gemini‑based match scoring (used on-demand to save cost)."""
     prompt = f"""
     Score 0-100 match between CV and job '{job_title}'.
     Return JSON: {{"score": int, "reason": "string (max 10 words)"}}
@@ -456,11 +452,9 @@ def score_job_match(cv_text, job_title, job_description=""):
 
 @st.cache_data(ttl=3600)
 def get_missing_keywords_preview(cv_text):
-    """Real missing keywords preview – used in free tier to entice upgrade."""
     prompt = f"""
     From this CV, identify 3 high-impact keywords missing that would most improve interview chances.
     Return ONLY comma-separated keywords.
-    Choose the most important recruiter-visible gaps.
     CV:
     {cv_text[:5000]}
     """
@@ -468,11 +462,10 @@ def get_missing_keywords_preview(cv_text):
     return response.text.strip()
 
 def generate_improved_cv(cv_text, target_role):
-    """Pro-only: generate a recruiter-optimized draft CV."""
     prompt = f"""
     Rewrite this CV for a {target_role} role.
-    IMPORTANT: DO NOT invent experience. DO NOT change facts.
-    Improve bullet points, add achievement language, improve ATS keywords.
+    DO NOT invent experience. DO NOT change facts.
+    Improve bullet points, add achievement language.
     Return the complete rewritten CV as plain text.
     Original: {cv_text[:10000]}
     """
@@ -482,7 +475,7 @@ def generate_improved_cv(cv_text, target_role):
 def create_docx_from_text(text, title="Document"):
     doc = Document()
     doc.add_heading(title, 0)
-    doc.add_paragraph("This draft improves clarity and alignment – review before submission.")
+    doc.add_paragraph("Review before submission.")
     for line in text.split('\n'):
         if line.strip():
             doc.add_paragraph(line)
@@ -513,16 +506,15 @@ def generate_ats_checklist(analysis_full):
     checklist = "✅ ATS OPTIMIZATION CHECKLIST\n\n"
     checklist += "Missing Keywords to Add:\n" + "\n".join(f"  • {kw}" for kw in analysis_full.get('missing_keywords', [])) + "\n\n"
     checklist += "Rewrite Suggestions:\n" + "\n".join(f"  • {sug}" for sug in analysis_full.get('rewrite_suggestions', [])) + "\n\n"
-    checklist += "General Tips:\n  • Use action verbs\n  • Quantify achievements\n  • Tailor summary to target role"
     return checklist
 
 # ---------------------------
-# 5. UI – Hero Section & Trust Badges
+# 5. UI - Hero Section
 # ---------------------------
 st.markdown("""
 <h1 style='text-align:center;'>📈 AI Career Intelligence</h1>
 <p style='text-align:center; font-size:18px; color:#5f6b7a;'>
-Upload your CV → Get recruiter feedback, ATS readiness, and matching jobs worldwide
+Upload your CV → Get recruiter feedback, ATS readiness, and matching jobs
 </p>
 <p class='credibility-note'>🤖 Scores are AI estimates based on recruiter best practices</p>
 """, unsafe_allow_html=True)
@@ -533,16 +525,15 @@ colB.markdown("🤖 **Powered by Gemini AI**")
 colC.markdown("🌍 **Worldwide job search support**")
 st.divider()
 
-# Display current tier
 if st.session_state.pro:
     st.markdown('<span class="tier-badge-pro">🚀 PRO TIER ACTIVE</span>', unsafe_allow_html=True)
-    st.success("✅ Full application engine unlocked – CV generator, cover letter generator, and more!")
+    st.success("✅ Full application engine unlocked")
 elif st.session_state.premium:
     st.markdown('<span class="tier-badge-premium">⭐ PREMIUM TIER ACTIVE</span>', unsafe_allow_html=True)
-    st.info("✅ Improvement tools unlocked – missing keywords, rewrite suggestions, and full job matches!")
+    st.info("✅ Improvement tools unlocked")
 else:
     st.markdown('<span class="tier-badge-free">🔓 FREE TIER</span>', unsafe_allow_html=True)
-    st.info("📌 Free tier includes basic scores and 1 job match. Upgrade to unlock full features.")
+    st.info("📌 Free tier includes basic scores and 1 job match")
 
 uploaded_file = st.file_uploader("Upload your CV (PDF or DOCX)", type=["pdf", "docx"])
 
@@ -550,17 +541,16 @@ if uploaded_file:
     cv_text = extract_text_from_file(uploaded_file)
     st.session_state.cv_text = cv_text
 
-    # Pipeline visualization
     with st.status("Analyzing your CV...", expanded=True) as status:
         st.write("📄 Reading CV document...")
         analysis = analyze_cv_cached(cv_text, full=False)
         st.session_state.analysis_free = analysis
-        st.write("🔍 Analyzing keywords and structure...")
-        st.write("📊 Estimating ATS compatibility...")
+        st.write("🔍 Analyzing keywords...")
+        st.write("📊 Calculating ATS compatibility...")
         st.write("🎯 Identifying target roles...")
         status.update(label="Analysis complete!", state="complete")
 
-    # Metrics with progress bars
+    # Metrics
     col1, col2, col3 = st.columns(3)
     with col1:
         st.write("📊 Overall CV Strength")
@@ -577,7 +567,7 @@ if uploaded_file:
         st.caption(f"📊 *Estimated {interview_pct} chance*")
 
     # Target roles
-    st.subheader("📌 Target Roles")
+    st.subheader("📌 Target Roles (Detected from Your CV)")
     target_roles = analysis.get('target_roles', [])
     if target_roles and target_roles[0] != "N/A":
         for role in target_roles:
@@ -587,14 +577,13 @@ if uploaded_file:
         st.warning("No specific roles detected")
         primary_role = st.text_input("Enter your target job title", key="manual_role_input")
 
-    # Free tier: limited strengths/weaknesses
+    # Free insights
     st.subheader("🔍 Key Insights (Limited Preview)")
     strengths = analysis.get('top_strengths', [])[:2]
     weaknesses = analysis.get('top_weaknesses', [])[:2]
     st.markdown("**Strengths:**\n" + "\n".join(f"- {s}" for s in strengths))
     st.markdown("**Weaknesses:**\n" + "\n".join(f"- {w}" for w in weaknesses))
 
-    # Blurred missing keywords preview for free tier (conversion trigger)
     if not st.session_state.premium and not st.session_state.pro:
         with st.spinner("Analyzing keyword gaps..."):
             preview_keywords = get_missing_keywords_preview(cv_text)
@@ -606,13 +595,12 @@ if uploaded_file:
         st.caption(f"🔒 **Missing keywords preview:** {blurred}")
         st.caption("🔒 **Upgrade to Premium to see full insights**")
 
-    # Recruiter verdict (Premium/Pro only)
     if st.session_state.premium or st.session_state.pro:
         st.info(f"**Recruiter Assessment:** {analysis['recruiter_verdict']}")
         st.markdown(f"**Experience Level:** {analysis['experience_level']}")
 
     # ---------------------------
-    # 6. Cover Letter Assistant (FIXED)
+    # Cover Letter Assistant
     # ---------------------------
     st.subheader("📝 Cover Letter Assistant")
     cl_mode = st.radio(
@@ -624,7 +612,6 @@ if uploaded_file:
 
     if cl_mode == "📄 Review my existing cover letter":
         st.caption(f"Target role: **{primary_role}**")
-        
         cl_tab1, cl_tab2 = st.tabs(["📁 Upload", "📝 Paste"])
         
         with cl_tab1:
@@ -639,33 +626,26 @@ if uploaded_file:
                         st.session_state.cover_letter_text = "\n".join(para.text for para in doc.paragraphs)
                     else:
                         st.session_state.cover_letter_text = uploaded_cl.read().decode("utf-8")
-                    st.success(f"✅ Loaded from {uploaded_cl.name}")
+                    st.success(f"✅ Loaded")
                 except Exception as e:
                     st.error(f"Error: {e}")
-                    st.session_state.cover_letter_text = ""
         
         with cl_tab2:
             pasted_text = st.text_area("Paste your cover letter", height=150, key="cl_review_paste")
             if pasted_text:
                 st.session_state.cover_letter_text = pasted_text
         
-        # Show preview of loaded text
         if st.session_state.cover_letter_text:
             with st.expander("Preview loaded cover letter"):
                 st.text(st.session_state.cover_letter_text[:500] + ("..." if len(st.session_state.cover_letter_text) > 500 else ""))
         
-        # Analyze button
         if st.button("🔍 Analyze Cover Letter", use_container_width=True, type="primary"):
             if st.session_state.cover_letter_text and len(st.session_state.cover_letter_text.strip()) > 50:
                 with st.spinner("Evaluating..."):
                     if st.session_state.premium or st.session_state.pro:
-                        # Full analysis with dimension scores
                         cl_analysis = analyze_cover_letter_full(st.session_state.cover_letter_text, primary_role)
-                        st.session_state.cover_letter_analysis = cl_analysis
-                        
                         st.metric("Application Readiness Score", f"{cl_analysis.get('overall_score', 50)}/100")
-                        st.info(f"**Recruiter Feedback:** {cl_analysis.get('verdict', 'Review needed')}")
-                        
+                        st.info(f"**Feedback:** {cl_analysis.get('verdict', 'Review needed')}")
                         col_cl1, col_cl2, col_cl3, col_cl4 = st.columns(4)
                         with col_cl1:
                             st.metric("Role Alignment", f"{cl_analysis.get('alignment_score', 50)}/100")
@@ -675,47 +655,44 @@ if uploaded_file:
                             st.metric("Impact", f"{cl_analysis.get('impact_score', 50)}/100")
                         with col_cl4:
                             st.metric("Structure", f"{cl_analysis.get('structure_score', 50)}/100")
-                        
                         missing = cl_analysis.get('missing_elements', [])
                         if missing:
                             st.markdown("**Missing Elements:** " + ", ".join(missing[:3]))
                     else:
-                        # Free tier: basic review
                         basic = review_cover_letter_basic(st.session_state.cover_letter_text, primary_role)
                         st.metric("Cover Letter Score", f"{basic.get('overall_score', 50)}/100")
                         st.info(f"**Feedback:** {basic.get('verdict', 'Review complete')}")
                         st.markdown(f"**Improvement Preview:** {basic.get('top_missing', 'Needs stronger alignment')}")
-                        st.caption("🔒 **Upgrade to Premium for full dimension scores and detailed improvements**")
-            elif not st.session_state.cover_letter_text:
-                st.warning("Please upload or paste a cover letter first.")
+                        st.caption("🔒 **Upgrade to Premium for full analysis**")
             else:
-                st.warning("Cover letter is too short. Please provide a more complete cover letter (at least 50 characters).")
-    
-    else:  # Generate new cover letter
+                st.warning("Please provide a cover letter (at least 50 characters)")
+
+    else:
         st.caption(f"Target role: **{primary_role}**")
         company_name = st.text_input("Company name (optional)", placeholder="e.g., Microsoft, Google", key="company_name")
-        
         if not st.session_state.premium and not st.session_state.pro:
             st.info("🔒 **Cover letter generation is a Premium feature**")
-            st.caption("Upgrade to Premium ($9/month or $29 lifetime) to generate cover letters")
         else:
             if st.button("✨ Generate Cover Letter", use_container_width=True, type="primary"):
                 with st.spinner("Generating..."):
                     generated = generate_cover_letter(cv_text, primary_role, company_name)
                     st.session_state.generated_cover_letter = generated
-                
                 st.markdown("### 📄 Generated Cover Letter")
-                st.caption("⚠️ Review before sending")
                 st.text_area("Your cover letter", st.session_state.generated_cover_letter, height=250)
                 docx_file = create_docx_from_text(st.session_state.generated_cover_letter, "Cover Letter")
                 st.download_button("📥 Download", docx_file, file_name="cover_letter.docx")
 
     # ---------------------------
-    # 7. Job Search
+    # Job Search (CV-First)
     # ---------------------------
     st.subheader("🌍 Job Search")
-    st.caption(f"🎯 **Searching for:** {primary_role}")
-
+    
+    st.caption("📌 **Based on your CV, we recommend searching for:**")
+    if target_roles and target_roles[0] != "N/A":
+        st.info(f"🎯 {target_roles[0]}")
+    else:
+        st.warning("No specific roles detected")
+    
     col_loc1, col_loc2 = st.columns(2)
     with col_loc1:
         country_display = st.selectbox("Country", list(COUNTRY_MAP.keys()), index=0, key="country_select")
@@ -724,34 +701,26 @@ if uploaded_file:
         location_refine = st.text_input("City / Region", placeholder="e.g., London, Nairobi, Gaborone", key="location_input")
 
     if country_display == "Other":
-        st.info("🌍 For countries not listed, we'll use AI‑powered search to find relevant jobs.")
-        # Botswana-specific local job links
+        st.info("🌍 Using AI-powered search for your selected country")
         if location_refine and "botswana" in location_refine.lower():
-            st.markdown("""
-            🔎 **Additional Botswana job portals:**
-            • [Dumela Jobs](https://www.dumelajobs.com)
-            • [JobWeb Botswana](https://bw.jobwebbotswana.com)
-            • [LinkedIn Botswana Jobs](https://www.linkedin.com/jobs)
-            """)
+            st.markdown("🔎 **Botswana job portals:** [Dumela](https://www.dumelajobs.com) | [JobWeb](https://bw.jobwebbotswana.com) | [LinkedIn](https://www.linkedin.com/jobs)")
 
-    manual_query = st.text_input("Override job title (optional)", placeholder=f"Leave empty to search for {primary_role}", key="manual_query_input")
+    st.caption("✏️ Optional override - only if you want to search for a different role")
+    manual_query = st.text_input("Override job title (optional)", placeholder=f"Leave empty to use {target_roles[0] if target_roles and target_roles[0] != 'N/A' else 'CV-detected role'}", key="manual_query_input")
+    
     search_clicked = st.button("🔍 Search for Jobs", use_container_width=True, type="primary", key="search_jobs_button")
-
+    
     st.subheader("💼 Matching Jobs")
-    # Tier-based job limits: free = 1, premium = 10, pro = 25
+    
     if st.session_state.pro:
         job_limit = 25
-        tier_label = "Pro"
     elif st.session_state.premium:
         job_limit = 10
-        tier_label = "Premium"
     else:
         job_limit = 1
-        tier_label = "Free"
 
     if search_clicked:
-        search_title = manual_query if manual_query else primary_role
-        with st.spinner(f"Searching for {search_title} ({tier_label} tier)..."):
+        with st.spinner("Searching for jobs matching your CV..."):
             jobs = get_job_matches(cv_text, analysis, manual_query, country_display, country_code, location_refine, limit=job_limit)
             if st.session_state.pro:
                 st.session_state.displayed_jobs_pro = jobs
@@ -762,9 +731,8 @@ if uploaded_file:
         if jobs:
             st.success(f"✅ Found {len(jobs)} jobs")
         else:
-            st.warning(f"No {search_title} jobs found. Try adjusting country, location, or job title.")
+            st.warning("No jobs found. Try a different country.")
 
-    # Display jobs based on tier
     display_jobs = []
     if st.session_state.pro:
         display_jobs = st.session_state.displayed_jobs_pro
@@ -787,17 +755,17 @@ if uploaded_file:
                     st.caption("🔒 **Match score available after upgrade**")
                 st.markdown(f"[Apply Now]({job['url']})")
         if not st.session_state.premium and not st.session_state.pro:
-            st.info("🔒 **Upgrade to Premium for 10+ jobs with match scores!**")
+            st.info("🔒 **Upgrade to Premium for more jobs with match scores!**")
 
     # ---------------------------
-    # 8. Premium / Pro Exclusive Features
+    # Premium/Pro Features
     # ---------------------------
     if st.session_state.premium and not st.session_state.pro:
         st.markdown("---")
         st.subheader("⭐ Premium Features")
         with st.spinner("Generating full analysis..."):
             full_analysis = analyze_cv_cached(cv_text, full=True)
-        st.subheader("🔑 Missing ATS Keywords")
+        st.subheader("🔑 Missing Keywords")
         st.markdown(", ".join(full_analysis.get('missing_keywords', [])))
         st.subheader("✍️ Rewrite Suggestions")
         for sug in full_analysis.get('rewrite_suggestions', []):
@@ -805,18 +773,18 @@ if uploaded_file:
         col_pdf, col_check = st.columns(2)
         with col_pdf:
             pdf_data = generate_pdf_report(full_analysis)
-            st.download_button("📥 Download PDF Report", pdf_data, file_name="career_report.pdf")
+            st.download_button("📥 PDF Report", pdf_data, file_name="career_report.pdf")
         with col_check:
             checklist_text = generate_ats_checklist(full_analysis)
-            st.download_button("📋 Download ATS Checklist", checklist_text, file_name="ats_checklist.txt")
-        st.info("🚀 **Upgrade to Pro for CV and cover letter generators!**")
+            st.download_button("📋 ATS Checklist", checklist_text, file_name="ats_checklist.txt")
+        st.info("🚀 **Upgrade to Pro for CV and cover letter generators**")
 
     elif st.session_state.pro:
         st.markdown("---")
         st.subheader("🚀 Pro Features")
-        with st.spinner("Generating full intelligence report..."):
+        with st.spinner("Generating full analysis..."):
             full_analysis = analyze_cv_cached(cv_text, full=True)
-        st.subheader("🔑 Missing ATS Keywords")
+        st.subheader("🔑 Missing Keywords")
         st.markdown(", ".join(full_analysis.get('missing_keywords', [])))
         st.subheader("✍️ Rewrite Suggestions")
         for sug in full_analysis.get('rewrite_suggestions', []):
@@ -829,7 +797,7 @@ if uploaded_file:
             checklist_text = generate_ats_checklist(full_analysis)
             st.download_button("📋 ATS Checklist", checklist_text, file_name="ats_checklist.txt")
         st.markdown("---")
-        st.subheader("🧾 Recruiter-Optimized CV Draft")
+        st.subheader("🧾 CV Draft Generator")
         if st.button("📄 Generate Improved CV Draft", use_container_width=True):
             with st.spinner("Generating..."):
                 st.session_state.generated_cv = generate_improved_cv(cv_text, primary_role)
@@ -839,7 +807,7 @@ if uploaded_file:
             st.download_button("📥 Download CV", docx_file, file_name="improved_cv.docx")
 
     # ---------------------------
-    # 9. Upgrade Section (for free users)
+    # Upgrade Section
     # ---------------------------
     if not st.session_state.premium and not st.session_state.pro:
         st.markdown("---")
@@ -857,7 +825,6 @@ if uploaded_file:
             <h3>Premium</h3>
             <div><span class="price">$9</span><span class="period">/month</span></div>
             <div><span class="price">$29</span><span class="period"> lifetime</span></div>
-            <p style="font-size:13px; color:#666;">Recruiter verdict, missing keywords, rewrite suggestions, 10 job matches, full cover‑letter diagnostics, ATS checklist, PDF report</p>
             </div>
             """, unsafe_allow_html=True)
         with col_card2:
@@ -867,10 +834,9 @@ if uploaded_file:
             <h3>Pro</h3>
             <div><span class="price">$19</span><span class="period">/month</span></div>
             <div><span class="price">$49</span><span class="period"> lifetime</span></div>
-            <p style="font-size:13px; color:#666;">All Premium + CV draft generator, cover letter generator, 25+ job matches, executive intelligence report</p>
             </div>
             """, unsafe_allow_html=True)
-        # Payment buttons
+        
         col_up1, col_up2, col_up3, col_up4 = st.columns(4)
         with col_up1:
             if st.button("Premium Monthly $9", use_container_width=True):
@@ -882,9 +848,9 @@ if uploaded_file:
                         success_url=APP_URL + "?success_premium_monthly=true",
                         cancel_url=APP_URL,
                     )
-                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay</a>", unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"Payment error: {e}")
+                    st.error(f"Error: {e}")
         with col_up2:
             if st.button("Premium Lifetime $29", use_container_width=True):
                 try:
@@ -895,9 +861,9 @@ if uploaded_file:
                         success_url=APP_URL + "?success_premium_lifetime=true",
                         cancel_url=APP_URL,
                     )
-                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay</a>", unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"Payment error: {e}")
+                    st.error(f"Error: {e}")
         with col_up3:
             if st.button("Pro Monthly $19", use_container_width=True):
                 try:
@@ -908,9 +874,9 @@ if uploaded_file:
                         success_url=APP_URL + "?success_pro_monthly=true",
                         cancel_url=APP_URL,
                     )
-                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay</a>", unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"Payment error: {e}")
+                    st.error(f"Error: {e}")
         with col_up4:
             if st.button("Pro Lifetime $49", use_container_width=True):
                 try:
@@ -921,9 +887,9 @@ if uploaded_file:
                         success_url=APP_URL + "?success_pro_lifetime=true",
                         cancel_url=APP_URL,
                     )
-                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay</a>", unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"Payment error: {e}")
+                    st.error(f"Error: {e}")
         st.markdown("---")
         st.caption("📝 **Testing unlock codes:**")
         col_code1, col_code2 = st.columns(2)
@@ -940,11 +906,9 @@ else:
     st.info("👆 Please upload your CV to begin.")
 
 # ---------------------------
-# 10. Footer
+# Footer
 # ---------------------------
 st.markdown("""
 <hr>
-<center>
-<b>AI Career Intelligence</b> • Powered by Gemini AI • Worldwide job search support
-</center>
+<center><b>AI Career Intelligence</b> • Powered by Gemini AI • Worldwide job search support</center>
 """, unsafe_allow_html=True)
