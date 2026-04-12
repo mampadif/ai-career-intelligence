@@ -8,6 +8,8 @@ import json
 import re
 from datetime import datetime
 from fpdf import FPDF
+from io import BytesIO
+from docx import Document
 
 # ---------------------------
 # 1. Configuration & Secrets
@@ -64,16 +66,18 @@ body { background-color: #f7f9fc; }
 .block-container { padding-top: 1rem; padding-bottom: 2rem; }
 h1 { font-weight: 700; }
 .stProgress > div > div { background: linear-gradient(90deg, #4A90E2, #6C63FF); }
-.score-caption {
-    font-size: 12px;
-    color: #888;
-    text-align: center;
-}
 .credibility-note {
     font-size: 11px;
     color: #999;
     text-align: center;
     margin-top: 5px;
+}
+.score-card {
+    background-color: #ffffff;
+    border-radius: 10px;
+    padding: 15px;
+    margin: 10px 0;
+    border: 1px solid #e6ebf2;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -93,6 +97,14 @@ if "displayed_jobs_free" not in st.session_state:
     st.session_state.displayed_jobs_free = []
 if "displayed_jobs_pro" not in st.session_state:
     st.session_state.displayed_jobs_pro = []
+if "generated_cv" not in st.session_state:
+    st.session_state.generated_cv = ""
+if "cover_letter_analysis" not in st.session_state:
+    st.session_state.cover_letter_analysis = None
+if "cover_letter_text" not in st.session_state:
+    st.session_state.cover_letter_text = ""
+if "improved_cover_letter" not in st.session_state:
+    st.session_state.improved_cover_letter = ""
 
 if "success" in st.query_params:
     st.session_state.paid = True
@@ -185,6 +197,69 @@ def get_interview_percentage(likelihood):
         "High": "65-85%"
     }
     return mapping.get(likelihood, "30-60%")
+
+@st.cache_data(ttl=3600)
+def analyze_cover_letter(letter_text, job_title=""):
+    """
+    Analyze cover letter for recruiter-readiness.
+    Returns scores across 5 dimensions.
+    """
+    prompt = f"""
+    Evaluate this cover letter as a professional recruiter.
+
+    Return ONLY valid JSON:
+    {{
+        "alignment_score": 0-100 (how well it matches the job),
+        "personalization_score": 0-100 (tailored vs generic),
+        "impact_score": 0-100 (achievements and results language),
+        "structure_score": 0-100 (professional flow and format),
+        "overall_score": 0-100,
+        "verdict": "one sentence recruiter evaluation",
+        "missing_elements": ["list", "of", "key", "persuasion", "elements"]
+    }}
+
+    Job role:
+    {job_title}
+
+    Cover letter:
+    {letter_text[:4000]}
+    """
+    response = model.generate_content(prompt)
+    raw = clean_json_response(response.text)
+    try:
+        return json.loads(raw)
+    except:
+        return {
+            "overall_score": 50,
+            "verdict": "Unable to evaluate cover letter",
+            "missing_elements": ["Role alignment", "Personalization", "Impact language"]
+        }
+
+@st.cache_data(ttl=3600)
+def improve_cover_letter(letter_text, job_title):
+    """
+    Generate an improved version of a cover letter.
+    Does NOT invent experience - only improves presentation.
+    """
+    prompt = f"""
+    Improve this cover letter for a {job_title} role.
+
+    IMPORTANT RULES:
+    - DO NOT invent or add fake experience
+    - DO NOT change facts or claims
+    - Keep all factual information exactly as provided
+    - Increase persuasion and impact language
+    - Strengthen achievement-focused statements
+    - Improve recruiter tone and professionalism
+    - Keep length similar to original
+
+    Return the complete improved cover letter as plain text.
+
+    Original cover letter:
+    {letter_text[:4000]}
+    """
+    response = model.generate_content(prompt)
+    return response.text
 
 @st.cache_data(ttl=3600)
 def generate_job_query(cv_text):
@@ -324,7 +399,7 @@ def score_job_match(cv_text, job_title, job_description=""):
     except:
         return 50, "Based on general alignment"
 
-@st.cache_data(ttl=3600)  # FIX: Added cache back
+@st.cache_data(ttl=3600)
 def get_missing_keywords_preview(cv_text):
     prompt = f"""
     From this CV, identify 3 high-impact keywords missing that would most improve interview chances.
@@ -335,6 +410,40 @@ def get_missing_keywords_preview(cv_text):
     """
     response = model.generate_content(prompt)
     return response.text.strip()
+
+def generate_improved_cv(cv_text, target_role):
+    prompt = f"""
+    Rewrite this CV to improve interview chances for a {target_role} role.
+
+    IMPORTANT RULES:
+    - DO NOT invent or add fake experience
+    - DO NOT change dates, job titles, or company names
+    - DO keep all factual information exactly as provided
+    - Improve bullet points using achievement-focused language
+    - Add relevant keywords for ATS without lying
+    - Improve formatting and clarity
+    - Keep structure recruiter-friendly
+
+    Return the complete rewritten CV as plain text.
+
+    Original CV:
+    {cv_text[:10000]}
+    """
+    response = model.generate_content(prompt)
+    return response.text
+
+def create_docx_from_text(text, filename="improved_cv.docx"):
+    doc = Document()
+    doc.add_heading("Recruiter-Optimized CV Draft", 0)
+    doc.add_paragraph("This draft improves clarity and keyword alignment but should be reviewed before submission.")
+    doc.add_paragraph("")
+    for line in text.split('\n'):
+        if line.strip():
+            doc.add_paragraph(line)
+    bio = BytesIO()
+    doc.save(bio)
+    bio.seek(0)
+    return bio
 
 def safe_encode(text):
     return text.encode('latin-1', 'ignore').decode('latin-1')
@@ -378,7 +487,7 @@ Upload your CV → Get recruiter feedback, ATS readiness, and matching jobs
 colA, colB, colC = st.columns(3)
 colA.markdown("✅ **Recruiter-style CV assessment**")
 colB.markdown("🤖 **Powered by Gemini AI**")
-colC.markdown("🌍 **Worldwide job search support**")  # Changed from "Global job coverage"
+colC.markdown("🌍 **Worldwide job search support**")
 
 st.divider()
 
@@ -429,6 +538,53 @@ if uploaded_file:
         st.markdown("**Strengths:**\n" + "\n".join(f"- {s}" for s in analysis['top_strengths']))
         st.markdown("**Weaknesses:**\n" + "\n".join(f"- {w}" for w in analysis['top_weaknesses']))
 
+    # ---------------------------
+    # Cover Letter Section (NEW)
+    # ---------------------------
+    st.subheader("🧾 Application Readiness Score")
+    st.caption("Paste your cover letter to see how recruiters would evaluate it")
+    
+    cover_letter_input = st.text_area(
+        "Paste your cover letter",
+        value=st.session_state.cover_letter_text,
+        height=200,
+        placeholder="Dear Hiring Manager...",
+        key="cover_letter_input"
+    )
+    st.session_state.cover_letter_text = cover_letter_input
+    
+    if cover_letter_input:
+        target_role_for_cl = analysis.get('target_roles', ['your target role'])[0]
+        
+        with st.spinner("Evaluating your cover letter..."):
+            cl_analysis = analyze_cover_letter(cover_letter_input, target_role_for_cl)
+            st.session_state.cover_letter_analysis = cl_analysis
+        
+        # Display cover letter scores
+        col_cl1, col_cl2, col_cl3, col_cl4 = st.columns(4)
+        with col_cl1:
+            st.metric("Role Alignment", f"{cl_analysis.get('alignment_score', 50)}/100")
+        with col_cl2:
+            st.metric("Personalization", f"{cl_analysis.get('personalization_score', 50)}/100")
+        with col_cl3:
+            st.metric("Impact Language", f"{cl_analysis.get('impact_score', 50)}/100")
+        with col_cl4:
+            st.metric("Structure", f"{cl_analysis.get('structure_score', 50)}/100")
+        
+        st.progress(cl_analysis.get('overall_score', 50)/100)
+        st.caption(f"**Application Readiness:** {cl_analysis.get('overall_score', 50)}/100")
+        st.info(f"**Recruiter Assessment:** {cl_analysis.get('verdict', 'Review needed')}")
+        
+        # Show missing elements with preview (conversion trigger)
+        missing_elements = cl_analysis.get('missing_elements', [])
+        if missing_elements and not st.session_state.paid:
+            st.markdown("#### 🔒 Missing Persuasion Elements")
+            if len(missing_elements) > 1:
+                preview_text = f"{missing_elements[0]}, [LOCKED], [LOCKED]"
+            else:
+                preview_text = f"{missing_elements[0]}... [LOCKED]"
+            st.warning(f"`{preview_text}` (Upgrade to see all issues + get improved version)")
+    
     # ---------------------------
     # Job Search Settings
     # ---------------------------
@@ -531,7 +687,9 @@ if uploaded_file:
         <p>✅ Missing ATS Keywords<br>
         ✅ Recruiter Rewrite Suggestions<br>
         ✅ Job Match Scoring<br>
-        ✅ Executive PDF Report</p>
+        ✅ Executive PDF Report<br>
+        ✅ Recruiter-Optimized CV Draft<br>
+        ✅ Job-Specific Cover Letter Generator</p>
         <p><strong>Lifetime early access — $9</strong></p>
         </div>
         """, unsafe_allow_html=True)
@@ -584,6 +742,80 @@ if uploaded_file:
         st.subheader("✍️ Rewrite Suggestions")
         for sug in full_analysis.get('rewrite_suggestions', []):
             st.markdown(f"- {sug}")
+        
+        # ----- CV Draft Generator -----
+        st.subheader("🧾 Recruiter-Optimized CV Draft Generator")
+        st.caption("Generate an improved version of your CV tailored to your target role")
+        
+        target_roles = full_analysis.get('target_roles', [])
+        target_role = target_roles[0] if target_roles else "your target role"
+        
+        col_draft1, col_draft2 = st.columns([3, 1])
+        with col_draft1:
+            st.info(f"🎯 **Targeting:** {target_role}")
+        with col_draft2:
+            generate_draft = st.button("🧾 Generate Improved CV Draft", use_container_width=True)
+        
+        if generate_draft:
+            with st.spinner("Generating recruiter-optimized CV draft..."):
+                improved_cv = generate_improved_cv(cv_text, target_role)
+                st.session_state.generated_cv = improved_cv
+        
+        if st.session_state.generated_cv:
+            st.markdown("---")
+            st.markdown("### 📄 Recruiter-Optimized Draft CV")
+            st.caption("⚠️ **Note:** This draft improves clarity and keyword alignment but should be reviewed before submission.")
+            
+            st.text_area("Improved CV Draft", st.session_state.generated_cv, height=400)
+            
+            col_download1, col_download2 = st.columns(2)
+            with col_download1:
+                st.download_button(
+                    "📥 Download as TXT",
+                    st.session_state.generated_cv,
+                    file_name="improved_cv.txt",
+                    mime="text/plain"
+                )
+            with col_download2:
+                docx_file = create_docx_from_text(st.session_state.generated_cv)
+                st.download_button(
+                    "📥 Download as DOCX",
+                    docx_file,
+                    file_name="improved_cv.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
+        
+        st.markdown("---")
+        
+        # ----- Cover Letter Improvement (Pro) -----
+        if st.session_state.cover_letter_text:
+            st.subheader("📝 Job-Specific Cover Letter Generator")
+            
+            col_cl_improve1, col_cl_improve2 = st.columns([3, 1])
+            with col_cl_improve1:
+                st.info(f"🎯 **Targeting:** {target_role}")
+            with col_cl_improve2:
+                generate_improved_cl = st.button("📝 Generate Improved Cover Letter", use_container_width=True)
+            
+            if generate_improved_cl:
+                with st.spinner("Generating recruiter-optimized cover letter..."):
+                    improved_cl = improve_cover_letter(st.session_state.cover_letter_text, target_role)
+                    st.session_state.improved_cover_letter = improved_cl
+            
+            if st.session_state.improved_cover_letter:
+                st.markdown("### ✨ Improved Cover Letter Draft")
+                st.caption("⚠️ **Note:** This draft improves persuasion and recruiter tone but should be reviewed before submission.")
+                
+                st.text_area("Improved Cover Letter", st.session_state.improved_cover_letter, height=300)
+                
+                st.download_button(
+                    "📥 Download Improved Cover Letter",
+                    st.session_state.improved_cover_letter,
+                    file_name="improved_cover_letter.txt",
+                    mime="text/plain"
+                )
+        
+        st.markdown("---")
         
         col_pdf, col_check = st.columns(2)
         with col_pdf:
