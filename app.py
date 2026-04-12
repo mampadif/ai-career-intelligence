@@ -32,6 +32,21 @@ genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-2.5-flash")
 stripe.api_key = STRIPE_SECRET_KEY
 
+# Country mapping - names to codes
+COUNTRY_MAP = {
+    "United States": "us",
+    "United Kingdom": "gb",
+    "Canada": "ca",
+    "Australia": "au",
+    "Germany": "de",
+    "France": "fr",
+    "India": "in",
+    "South Africa": "za",
+    "Nigeria": "ng",
+    "Kenya": "ke",
+    "Other": "other"
+}
+
 # ---------------------------
 # 1.5 CUSTOM CSS
 # ---------------------------
@@ -95,14 +110,6 @@ h1 { font-weight: 700; }
 .tier-badge-free { background-color: #6c757d; color: white; padding: 4px 12px; border-radius: 20px; font-size: 12px; display: inline-block; }
 .tier-badge-premium { background-color: #4A90E2; color: white; padding: 4px 12px; border-radius: 20px; font-size: 12px; display: inline-block; }
 .tier-badge-pro { background: linear-gradient(90deg, #6C63FF, #4A90E2); color: white; padding: 4px 12px; border-radius: 20px; font-size: 12px; display: inline-block; }
-.debug-box {
-    background-color: #f0f0f0;
-    border-left: 4px solid #6C63FF;
-    padding: 10px;
-    margin: 10px 0;
-    font-family: monospace;
-    font-size: 12px;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -133,8 +140,6 @@ if "cover_letter_text" not in st.session_state:
     st.session_state.cover_letter_text = ""
 if "improved_cover_letter" not in st.session_state:
     st.session_state.improved_cover_letter = ""
-if "analyze_cover_letter_trigger" not in st.session_state:
-    st.session_state.analyze_cover_letter_trigger = False
 
 if "success_premium_monthly" in st.query_params:
     st.session_state.premium = True
@@ -270,7 +275,6 @@ def improve_cover_letter(letter_text, job_title):
 
 @st.cache_data(ttl=3600)
 def generate_job_query(cv_text):
-    """Extract the single best job title from CV"""
     prompt = f"""
     Extract the single best job title from this CV.
     Return ONLY one title.
@@ -290,23 +294,15 @@ def deduplicate_jobs(jobs):
     return unique_jobs
 
 def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
-    """Get jobs from Adzuna API with visible error handling"""
     url = f"https://api.adzuna.com/v1/api/jobs/{country_code}/search/1"
     params = {"app_id": ADZUNA_APP_ID, "app_key": JOB_API_KEY, "results_per_page": limit * 2, "what": query}
     if location_refine and location_refine.strip():
         params["where"] = location_refine.strip()
     
     try:
-        st.write(f"📡 Adzuna API call: {url}")
-        st.write(f"📡 Query: {query}, Country: {country_code}, Location: {location_refine}")
-        
         resp = requests.get(url, params=params, timeout=10)
-        st.write(f"📡 Adzuna Response Status: {resp.status_code}")
-        
         if resp.status_code == 200:
             jobs = resp.json().get("results", [])
-            st.write(f"📡 Adzuna found {len(jobs)} raw jobs")
-            
             formatted_jobs = []
             for j in jobs:
                 company = j.get("company", {})
@@ -336,20 +332,14 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
                     "date_display": date_display,
                     "is_expired": is_expired
                 })
-            unique_jobs = deduplicate_jobs(formatted_jobs)
-            return unique_jobs[:limit]
+            return deduplicate_jobs(formatted_jobs)[:limit]
         else:
-            st.error(f"Adzuna API returned status {resp.status_code}: {resp.text[:200]}")
             return []
     except Exception as e:
-        st.error(f"Adzuna search failed with exception: {type(e).__name__}: {str(e)}")
         return []
 
 def get_jobs_from_gemini_search(cv_text, job_title, location, limit=5):
-    """Use Gemini to find jobs (with visible error handling)"""
     try:
-        st.write(f"🤖 Gemini job search for: {job_title} in {location}")
-        
         prompt = f"""
         Find {limit} recent job postings for a {job_title} position in {location}.
         
@@ -375,13 +365,8 @@ def get_jobs_from_gemini_search(cv_text, job_title, location, limit=5):
         """
         response = model.generate_content(prompt)
         raw = clean_json_response(response.text)
-        
-        st.write(f"🤖 Gemini response length: {len(raw)} characters")
-        
         result = json.loads(raw)
         jobs = result.get("jobs", [])
-        st.write(f"🤖 Gemini found {len(jobs)} jobs")
-        
         return [{
             "title": j.get("job_title", "Untitled"),
             "company": j.get("company_name", "Unknown"),
@@ -391,18 +376,10 @@ def get_jobs_from_gemini_search(cv_text, job_title, location, limit=5):
             "date_display": f"📅 {j.get('date_posted', 'Recently posted')}",
             "is_expired": False
         } for j in jobs]
-    except json.JSONDecodeError as e:
-        st.error(f"Gemini returned invalid JSON: {str(e)}")
-        st.write("Raw response:", response.text[:500])
-        return []
-    except Exception as e:
-        st.error(f"Gemini search failed: {type(e).__name__}: {str(e)}")
+    except:
         return []
 
-def get_job_matches(cv_text, analysis, manual_query, country_code, country_name, location_refine, limit=5):
-    """Get job matches with full debug visibility"""
-    
-    # Determine search query
+def get_job_matches(cv_text, analysis, manual_query, country_name, country_code, location_refine, limit=5):
     query = manual_query.strip() if manual_query else ""
     
     if not query:
@@ -412,36 +389,21 @@ def get_job_matches(cv_text, analysis, manual_query, country_code, country_name,
         else:
             query = generate_job_query(cv_text).strip()
     
-    # Clean query - take only first role if comma-separated
     if "," in query:
-        original = query
         query = query.split(",")[0].strip()
-        st.info(f"🔍 Query normalized: '{original}' → '{query}'")
     
     if not query or len(query) < 3:
-        st.error(f"Could not determine a valid job title. Query was: '{query}'")
         return []
-    
-    st.success(f"🔍 Searching for: **{query}**")
     
     adzuna_countries = ["us", "gb", "ca", "au", "de", "fr", "in", "za"]
     
     if country_code in adzuna_countries:
-        st.info(f"📡 Using Adzuna API for country: {country_code}")
-        jobs = get_jobs_from_adzuna(query, country_code, location_refine, limit)
-        if not jobs:
-            st.warning("No jobs found from Adzuna for this query and location.")
-        return jobs
+        return get_jobs_from_adzuna(query, country_code, location_refine, limit)
     else:
-        st.info(f"🤖 Using Gemini search for country: {country_name or country_code}")
-        if not country_name:
-            st.error("Please enter a country name for 'Other' countries.")
+        if not country_name or country_name == "Other":
             return []
         search_location = f"{location_refine}, {country_name}" if location_refine else country_name
-        jobs = get_jobs_from_gemini_search(cv_text, query, search_location, limit)
-        if not jobs:
-            st.warning("No jobs returned from AI search for this location.")
-        return jobs
+        return get_jobs_from_gemini_search(cv_text, query, search_location, limit)
 
 @st.cache_data(ttl=3600)
 def score_job_match(cv_text, job_title, job_description=""):
@@ -620,21 +582,15 @@ if uploaded_file:
                 else:
                     cover_letter_text = uploaded_cl.read().decode("utf-8")
                 st.success(f"✅ Loaded from {uploaded_cl.name}")
-                st.session_state.analyze_cover_letter_trigger = True
             except Exception as e:
                 st.error(f"Error: {e}")
 
     with cl_tab2:
-        pasted_text = st.text_area("Paste your cover letter", height=150, key="cl_paste")
-        if pasted_text:
-            cover_letter_text = pasted_text
-            st.session_state.analyze_cover_letter_trigger = True
+        cover_letter_text = st.text_area("Paste your cover letter", height=150, key="cl_paste")
 
-    # Analyze button for manual trigger
     analyze_cl_clicked = st.button("🔍 Analyze Cover Letter", key="analyze_cl_button")
 
-    # Trigger analysis
-    if cover_letter_text and (st.session_state.analyze_cover_letter_trigger or analyze_cl_clicked):
+    if cover_letter_text and analyze_cl_clicked:
         st.session_state.cover_letter_text = cover_letter_text
         target_role = analysis.get('target_roles', ['your target role'])[0]
         
@@ -642,9 +598,25 @@ if uploaded_file:
             cl_analysis = analyze_cover_letter(cover_letter_text, target_role)
             st.session_state.cover_letter_analysis = cl_analysis
         
-        st.metric("Application Readiness", f"{cl_analysis.get('overall_score', 50)}/100")
+        # Show overall score prominently
+        st.metric("Application Readiness Score", f"{cl_analysis.get('overall_score', 50)}/100")
         
+        # Show verdict (visible to all)
+        st.info(f"**Recruiter Feedback:** {cl_analysis.get('verdict', 'Review needed')}")
+        
+        missing = cl_analysis.get('missing_elements', [])
+        if missing:
+            if st.session_state.premium or st.session_state.pro:
+                st.markdown("**Missing Elements:** " + ", ".join(missing[:3]))
+            else:
+                # Free tier shows only 1 element as preview (enticement)
+                st.markdown(f"**Missing Element (Preview):** {missing[0]}")
+                st.caption("🔒 **Upgrade to Premium to see all missing elements + get an improved cover letter**")
+        
+        # For Premium/Pro, show full breakdown
         if st.session_state.premium or st.session_state.pro:
+            st.markdown("---")
+            st.subheader("Detailed Breakdown")
             col_cl1, col_cl2, col_cl3, col_cl4 = st.columns(4)
             with col_cl1:
                 st.metric("Role Alignment", f"{cl_analysis.get('alignment_score', 50)}/100")
@@ -654,18 +626,9 @@ if uploaded_file:
                 st.metric("Impact", f"{cl_analysis.get('impact_score', 50)}/100")
             with col_cl4:
                 st.metric("Structure", f"{cl_analysis.get('structure_score', 50)}/100")
-            st.info(f"**Verdict:** {cl_analysis.get('verdict', 'Review needed')}")
-            
-            missing = cl_analysis.get('missing_elements', [])
-            if missing:
-                st.markdown("**Missing Elements:** " + ", ".join(missing[:3]))
-        else:
-            st.caption("🔒 **Upgrade to Premium to see detailed breakdown + improvement suggestions**")
-        
-        st.session_state.analyze_cover_letter_trigger = False
 
     # ---------------------------
-    # Job Search - WITH DEBUG VISIBILITY
+    # Job Search - WITH COUNTRY NAMES
     # ---------------------------
     st.subheader("🌍 Job Search Settings")
     
@@ -673,29 +636,20 @@ if uploaded_file:
     
     col_loc1, col_loc2 = st.columns(2)
     with col_loc1:
-        country_option = st.selectbox("Country", ["us", "gb", "ca", "au", "de", "fr", "in", "za", "other"], index=0, key="country_select")
+        country_display = st.selectbox(
+            "Country",
+            options=list(COUNTRY_MAP.keys()),
+            index=0,
+            key="country_select"
+        )
+        country_code = COUNTRY_MAP[country_display]
     with col_loc2:
-        location_refine = st.text_input("City / Region", placeholder="e.g., London, Nairobi", key="location_input")
+        location_refine = st.text_input("City / Region", placeholder="e.g., London, Nairobi, Gaborone", key="location_input")
     
-    if country_option == "other":
-        country_name = st.text_input("Country name", placeholder="Botswana, Ghana...", key="country_name_input")
-        if country_name and "botswana" in country_name.lower():
-            st.info("🔎 Botswana job portals: [Dumela Jobs](https://www.dumelajobs.com) | [JobWeb](https://bw.jobwebbotswana.com) | [LinkedIn](https://www.linkedin.com/jobs)")
-        elif country_option == "other" and not country_name:
-            st.warning("⚠️ Please enter a country name before searching.")
-    else:
-        country_name = country_option.upper()
+    if country_display == "Other":
+        st.info("🌍 For countries not listed, we'll use AI-powered search to find relevant jobs.")
     
     manual_query = st.text_input("Override job title (optional)", placeholder="Leave empty to use detected roles", key="manual_query_input")
-    
-    # Debug info box
-    with st.expander("🔧 Debug Info (shows what will be searched)"):
-        debug_query = manual_query if manual_query else (target_roles[0] if target_roles and target_roles[0] != "N/A" else "Auto-detected")
-        st.write(f"**Search query:** {debug_query}")
-        st.write(f"**Country:** {country_option}")
-        st.write(f"**Location:** {location_refine or 'Not specified'}")
-        if country_option == "other":
-            st.write(f"**Country name:** {country_name or 'Not entered'}")
     
     search_clicked = st.button("🔍 Search for Jobs", use_container_width=True, type="primary", key="search_jobs_button")
     
@@ -713,25 +667,19 @@ if uploaded_file:
         tier_label = "Free"
     
     if search_clicked:
-        st.markdown("---")
-        st.subheader("🔍 Search Results")
-        
-        if country_option == "other" and not country_name:
-            st.error("❌ Please enter your country name before searching")
-        else:
-            with st.spinner(f"Searching for jobs ({tier_label} tier)..."):
-                jobs = get_job_matches(cv_text, analysis, manual_query, country_option, country_name, location_refine, limit=job_limit)
-                if st.session_state.pro:
-                    st.session_state.displayed_jobs_pro = jobs
-                elif st.session_state.premium:
-                    st.session_state.displayed_jobs_premium = jobs
-                else:
-                    st.session_state.displayed_jobs_free = jobs
-            
-            if jobs:
-                st.success(f"✅ Found {len(jobs)} jobs matching your profile!")
+        with st.spinner(f"Searching for jobs ({tier_label} tier)..."):
+            jobs = get_job_matches(cv_text, analysis, manual_query, country_display, country_code, location_refine, limit=job_limit)
+            if st.session_state.pro:
+                st.session_state.displayed_jobs_pro = jobs
+            elif st.session_state.premium:
+                st.session_state.displayed_jobs_premium = jobs
             else:
-                st.error("❌ No jobs found. Check the debug info above and try adjusting your search criteria.")
+                st.session_state.displayed_jobs_free = jobs
+        
+        if jobs:
+            st.success(f"✅ Found {len(jobs)} jobs matching your profile!")
+        else:
+            st.warning("No jobs found. Try adjusting your search criteria.")
     
     # Display jobs based on tier
     display_jobs = []
