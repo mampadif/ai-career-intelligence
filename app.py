@@ -562,12 +562,13 @@ if uploaded_file:
         st.markdown(f"**Experience Level:** {analysis['experience_level']}")
 
     # ---------------------------
-    # Cover Letter Section
+    # Cover Letter Section - FIXED
     # ---------------------------
     st.subheader("🧾 Application Readiness Score")
     
     cl_tab1, cl_tab2 = st.tabs(["📁 Upload Cover Letter", "📝 Paste Cover Letter"])
     cover_letter_text = ""
+    analyze_trigger = False
 
     with cl_tab1:
         uploaded_cl = st.file_uploader("Upload cover letter (PDF, DOCX, TXT)", type=["pdf", "docx", "txt"], key="cl_upload")
@@ -582,15 +583,23 @@ if uploaded_file:
                 else:
                     cover_letter_text = uploaded_cl.read().decode("utf-8")
                 st.success(f"✅ Loaded from {uploaded_cl.name}")
+                analyze_trigger = True
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"Error reading file: {e}")
 
     with cl_tab2:
-        cover_letter_text = st.text_area("Paste your cover letter", height=150, key="cl_paste")
+        pasted_text = st.text_area("Paste your cover letter", height=150, key="cl_paste")
+        if pasted_text:
+            cover_letter_text = pasted_text
+            analyze_trigger = True
 
-    analyze_cl_clicked = st.button("🔍 Analyze Cover Letter", key="analyze_cl_button")
-
-    if cover_letter_text and analyze_cl_clicked:
+    # Manual analyze button
+    col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
+    with col_btn2:
+        manual_analyze = st.button("🔍 Analyze Cover Letter", use_container_width=True, type="primary", key="manual_analyze_btn")
+    
+    # Trigger analysis if either auto-detect or manual button
+    if (analyze_trigger or manual_analyze) and cover_letter_text:
         st.session_state.cover_letter_text = cover_letter_text
         target_role = analysis.get('target_roles', ['your target role'])[0]
         
@@ -626,6 +635,9 @@ if uploaded_file:
                 st.metric("Impact", f"{cl_analysis.get('impact_score', 50)}/100")
             with col_cl4:
                 st.metric("Structure", f"{cl_analysis.get('structure_score', 50)}/100")
+    
+    elif manual_analyze and not cover_letter_text:
+        st.warning("Please upload or paste a cover letter first.")
 
     # ---------------------------
     # Job Search - WITH COUNTRY NAMES
