@@ -45,7 +45,7 @@ COUNTRY_MAP = {
     "South Africa": "za",
     "Nigeria": "ng",
     "Kenya": "ke",
-    "Botswana": "bw",      # Added for fallback handling
+    "Botswana": "bw",
     "Ghana": "gh",
     "Other": "other"
 }
@@ -143,6 +143,8 @@ if "generated_cover_letter" not in st.session_state:
     st.session_state.generated_cover_letter = ""
 if "cover_letter_analysis" not in st.session_state:
     st.session_state.cover_letter_analysis = None
+if "cover_letter_text" not in st.session_state:
+    st.session_state.cover_letter_text = ""
 
 # Stripe success callbacks
 if "success_premium_monthly" in st.query_params:
@@ -610,7 +612,7 @@ if uploaded_file:
         st.markdown(f"**Experience Level:** {analysis['experience_level']}")
 
     # ---------------------------
-    # 6. Cover Letter Assistant
+    # 6. Cover Letter Assistant (FIXED)
     # ---------------------------
     st.subheader("📝 Cover Letter Assistant")
     cl_mode = st.radio(
@@ -622,35 +624,48 @@ if uploaded_file:
 
     if cl_mode == "📄 Review my existing cover letter":
         st.caption(f"Target role: **{primary_role}**")
+        
         cl_tab1, cl_tab2 = st.tabs(["📁 Upload", "📝 Paste"])
-        cover_letter_text = ""
+        
         with cl_tab1:
             uploaded_cl = st.file_uploader("Upload cover letter", type=["pdf", "docx", "txt"], key="cl_review_upload")
             if uploaded_cl:
                 try:
                     if uploaded_cl.name.endswith(".pdf"):
                         reader = PyPDF2.PdfReader(uploaded_cl)
-                        cover_letter_text = "".join(page.extract_text() for page in reader.pages)
+                        st.session_state.cover_letter_text = "".join(page.extract_text() for page in reader.pages)
                     elif uploaded_cl.name.endswith(".docx"):
                         doc = docx.Document(uploaded_cl)
-                        cover_letter_text = "\n".join(para.text for para in doc.paragraphs)
+                        st.session_state.cover_letter_text = "\n".join(para.text for para in doc.paragraphs)
                     else:
-                        cover_letter_text = uploaded_cl.read().decode("utf-8")
-                    st.success("✅ Loaded")
+                        st.session_state.cover_letter_text = uploaded_cl.read().decode("utf-8")
+                    st.success(f"✅ Loaded from {uploaded_cl.name}")
                 except Exception as e:
                     st.error(f"Error: {e}")
+                    st.session_state.cover_letter_text = ""
+        
         with cl_tab2:
-            cover_letter_text = st.text_area("Paste your cover letter", height=150, key="cl_review_paste")
-
+            pasted_text = st.text_area("Paste your cover letter", height=150, key="cl_review_paste")
+            if pasted_text:
+                st.session_state.cover_letter_text = pasted_text
+        
+        # Show preview of loaded text
+        if st.session_state.cover_letter_text:
+            with st.expander("Preview loaded cover letter"):
+                st.text(st.session_state.cover_letter_text[:500] + ("..." if len(st.session_state.cover_letter_text) > 500 else ""))
+        
+        # Analyze button
         if st.button("🔍 Analyze Cover Letter", use_container_width=True, type="primary"):
-            if cover_letter_text:
+            if st.session_state.cover_letter_text and len(st.session_state.cover_letter_text.strip()) > 50:
                 with st.spinner("Evaluating..."):
                     if st.session_state.premium or st.session_state.pro:
                         # Full analysis with dimension scores
-                        cl_analysis = analyze_cover_letter_full(cover_letter_text, primary_role)
+                        cl_analysis = analyze_cover_letter_full(st.session_state.cover_letter_text, primary_role)
                         st.session_state.cover_letter_analysis = cl_analysis
+                        
                         st.metric("Application Readiness Score", f"{cl_analysis.get('overall_score', 50)}/100")
                         st.info(f"**Recruiter Feedback:** {cl_analysis.get('verdict', 'Review needed')}")
+                        
                         col_cl1, col_cl2, col_cl3, col_cl4 = st.columns(4)
                         with col_cl1:
                             st.metric("Role Alignment", f"{cl_analysis.get('alignment_score', 50)}/100")
@@ -660,21 +675,26 @@ if uploaded_file:
                             st.metric("Impact", f"{cl_analysis.get('impact_score', 50)}/100")
                         with col_cl4:
                             st.metric("Structure", f"{cl_analysis.get('structure_score', 50)}/100")
+                        
                         missing = cl_analysis.get('missing_elements', [])
                         if missing:
                             st.markdown("**Missing Elements:** " + ", ".join(missing[:3]))
                     else:
-                        basic = review_cover_letter_basic(cover_letter_text, primary_role)
+                        # Free tier: basic review
+                        basic = review_cover_letter_basic(st.session_state.cover_letter_text, primary_role)
                         st.metric("Cover Letter Score", f"{basic.get('overall_score', 50)}/100")
                         st.info(f"**Feedback:** {basic.get('verdict', 'Review complete')}")
                         st.markdown(f"**Improvement Preview:** {basic.get('top_missing', 'Needs stronger alignment')}")
                         st.caption("🔒 **Upgrade to Premium for full dimension scores and detailed improvements**")
+            elif not st.session_state.cover_letter_text:
+                st.warning("Please upload or paste a cover letter first.")
             else:
-                st.warning("Please provide a cover letter first.")
-
+                st.warning("Cover letter is too short. Please provide a more complete cover letter (at least 50 characters).")
+    
     else:  # Generate new cover letter
         st.caption(f"Target role: **{primary_role}**")
         company_name = st.text_input("Company name (optional)", placeholder="e.g., Microsoft, Google", key="company_name")
+        
         if not st.session_state.premium and not st.session_state.pro:
             st.info("🔒 **Cover letter generation is a Premium feature**")
             st.caption("Upgrade to Premium ($9/month or $29 lifetime) to generate cover letters")
@@ -683,6 +703,7 @@ if uploaded_file:
                 with st.spinner("Generating..."):
                     generated = generate_cover_letter(cv_text, primary_role, company_name)
                     st.session_state.generated_cover_letter = generated
+                
                 st.markdown("### 📄 Generated Cover Letter")
                 st.caption("⚠️ Review before sending")
                 st.text_area("Your cover letter", st.session_state.generated_cover_letter, height=250)
@@ -705,7 +726,7 @@ if uploaded_file:
     if country_display == "Other":
         st.info("🌍 For countries not listed, we'll use AI‑powered search to find relevant jobs.")
         # Botswana-specific local job links
-        if "botswana" in location_refine.lower():
+        if location_refine and "botswana" in location_refine.lower():
             st.markdown("""
             🔎 **Additional Botswana job portals:**
             • [Dumela Jobs](https://www.dumelajobs.com)
