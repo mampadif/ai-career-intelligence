@@ -23,8 +23,7 @@ APP_URL = st.secrets["APP_URL"]
 PRO_UNLOCK_CODE = st.secrets["PRO_UNLOCK_CODE"]
 
 genai.configure(api_key=GEMINI_API_KEY)
-# CRITICAL: Using gemini-2.5-flash (stable, no shutdown until at least 2027)
-# gemini-2.0-flash is scheduled for shutdown on June 1, 2026
+# Using gemini-2.5-flash (stable, no shutdown until at least 2027)
 model = genai.GenerativeModel("gemini-2.5-flash")
 stripe.api_key = STRIPE_SECRET_KEY
 
@@ -194,42 +193,103 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
         return []
 
 def get_jobs_from_gemini_search(cv_text, job_title, location, limit=5):
-    """Use Gemini for countries not supported by Adzuna (Botswana, Ghana, etc.)"""
+    """
+    Use Gemini for countries not supported by Adzuna (Botswana, Ghana, etc.)
+    With improved error handling and fallback text parsing
+    """
     try:
         prompt = f"""
-        Find {limit} recent, UNIQUE job postings for a {job_title} position in {location}.
+        Find {limit} recent, legitimate job postings for a {job_title} position in {location}.
         
-        Return ONLY valid JSON in this format:
-        {{
-            "jobs": [
-                {{
-                    "job_title": "...",
-                    "company_name": "...",
-                    "location": "...",
-                    "apply_url": "...",
-                    "brief_description": "..."
-                }}
-            ]
-        }}
+        For each job, provide:
+        1. Job title
+        2. Company name
+        3. Location
+        4. Direct apply URL
+        5. Brief description (1 sentence)
+        
+        Format your response as a simple list. Do NOT use JSON.
+        Just provide the information in this format:
+        
+        Job 1:
+        Title: [job title]
+        Company: [company name]
+        Location: [location]
+        URL: [apply link]
+        Description: [brief description]
+        
+        Job 2:
+        ...
         """
-        response = model.generate_content(prompt)
-        raw = clean_json_response(response.text)
-        result = json.loads(raw)
-        jobs = result.get('jobs', [])
         
+        response = model.generate_content(prompt)
+        response_text = response.text
+        
+        # Parse the text response instead of JSON
+        jobs = []
+        lines = response_text.strip().split('\n')
+        
+        current_job = {}
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            if line.lower().startswith('job') and ':' in line:
+                # Save previous job if exists
+                if current_job and 'title' in current_job:
+                    jobs.append(current_job)
+                current_job = {}
+            elif line.lower().startswith('title:'):
+                current_job['title'] = line.split(':', 1)[1].strip()
+            elif line.lower().startswith('company:'):
+                current_job['company'] = line.split(':', 1)[1].strip()
+            elif line.lower().startswith('location:'):
+                current_job['location'] = line.split(':', 1)[1].strip()
+            elif line.lower().startswith('url:'):
+                current_job['url'] = line.split(':', 1)[1].strip()
+            elif line.lower().startswith('description:'):
+                current_job['description'] = line.split(':', 1)[1].strip()
+        
+        # Add the last job
+        if current_job and 'title' in current_job:
+            jobs.append(current_job)
+        
+        # If parsing failed, try a simpler approach
+        if not jobs:
+            simple_prompt = f"""
+            Find {limit} job posting URLs for {job_title} in {location}.
+            Return ONLY the URLs, one per line.
+            No explanations.
+            """
+            simple_response = model.generate_content(simple_prompt)
+            urls = simple_response.text.strip().split('\n')
+            
+            for idx, url in enumerate(urls):
+                if url.startswith('http'):
+                    jobs.append({
+                        "title": f"{job_title} Position {idx+1}",
+                        "company": "Unknown Company",
+                        "location": location,
+                        "url": url,
+                        "description": f"Job posting for {job_title} in {location}"
+                    })
+        
+        # Convert to standard format
         return [{
-            "title": job.get("job_title", "Untitled"),
-            "company": job.get("company_name", "Unknown Company"),
+            "title": job.get("title", f"{job_title} Position"),
+            "company": job.get("company", "Unknown Company"),
             "location": job.get("location", location),
-            "url": job.get("apply_url", "#"),
-            "description": job.get("brief_description", "")
-        } for job in jobs]
+            "url": job.get("url", "#"),
+            "description": job.get("description", f"Job posting for {job_title} in {location}")
+        } for job in jobs[:limit]]
+        
     except Exception as e:
         st.warning(f"Gemini search error: {e}")
         return []
 
 def get_job_matches(cv_text, analysis, manual_query, country_code, country_name, location_refine, limit=5):
-    """Get jobs with support for all countries"""
+    """Get jobs - Adzuna for supported countries, guidance for others"""
     query = manual_query
     if not query or len(query) < 3:
         target_roles = analysis.get('target_roles', [])
@@ -241,10 +301,20 @@ def get_job_matches(cv_text, analysis, manual_query, country_code, country_name,
     if not query or len(query) < 3:
         return []
     
-    # For "other" countries, use Gemini Search (Botswana, Ghana, etc.)
+    # For "other" countries, provide guidance instead of failing
     if country_code == "other":
-        search_location = f"{location_refine}, {country_name}" if location_refine else country_name
-        return get_jobs_from_gemini_search(cv_text, query, search_location, limit)
+        st.info(f"""
+        📢 **Job search for {country_name}**  
+        
+        We're expanding our coverage! Meanwhile, try these options:
+        
+        1. Select **South Africa** or another nearby country above
+        2. Use the **job title override** to search manually
+        3. Check local job boards specific to {country_name}
+        
+        Direct job search for {country_name} coming in our next update!
+        """)
+        return []
     else:
         return get_jobs_from_adzuna(query, country_code, location_refine, limit)
 
@@ -358,7 +428,7 @@ if uploaded_file:
         with col_loc3:
             country_name = st.text_input("Country name", placeholder="Botswana, Ghana...", key="other_country")
         if country_name and "botswana" in country_name.lower():
-            st.success("🇧🇼 Botswana selected! We'll search the web for jobs in Botswana.")
+            st.success("🇧🇼 Botswana selected! We'll help you find jobs.")
     else:
         country_name = country_option.upper()
 
@@ -415,7 +485,9 @@ if uploaded_file:
             st.info("🔓 **Upgrade to Pro** to see 20+ jobs and get AI match scores!")
     else:
         if search_clicked:
-            st.warning("No jobs found. Try adjusting the job title, country, or location.")
+            # Don't show error if we already showed guidance
+            if not (country_option == "other" and country_name):
+                st.warning("No jobs found. Try adjusting the job title, country, or location.")
         else:
             st.info("👆 Click 'Search for Jobs' to find opportunities.")
 
@@ -510,7 +582,8 @@ if uploaded_file:
                     st.markdown(f"[Apply Now]({job['url']})")
         else:
             if search_pro_clicked:
-                st.warning("No jobs found. Try adjusting job title or location.")
+                if not (country_option == "other" and country_name):
+                    st.warning("No jobs found. Try adjusting job title or location.")
             else:
                 st.info("👆 Click 'Search for Jobs (Pro)' to find opportunities.")
 
@@ -518,4 +591,4 @@ else:
     st.info("👆 Please upload your CV to begin.")
 
 st.markdown("---")
-st.caption("AI Career Intelligence – Powered by Gemini 2.5 Flash | No duplicates | Global coverage including Botswana")
+st.caption("AI Career Intelligence – Powered by Gemini 2.5 Flash | No duplicates | Global coverage")
