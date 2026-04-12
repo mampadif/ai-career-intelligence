@@ -125,6 +125,8 @@ if "cover_letter_text" not in st.session_state:
     st.session_state.cover_letter_text = ""
 if "improved_cover_letter" not in st.session_state:
     st.session_state.improved_cover_letter = ""
+if "analyze_cover_letter_trigger" not in st.session_state:
+    st.session_state.analyze_cover_letter_trigger = False
 
 if "success_premium_monthly" in st.query_params:
     st.session_state.premium = True
@@ -508,7 +510,7 @@ if uploaded_file:
         st.markdown(f"**Experience Level:** {analysis['experience_level']}")
 
     # ---------------------------
-    # Cover Letter Section
+    # Cover Letter Section - FIXED
     # ---------------------------
     st.subheader("🧾 Application Readiness Score")
     
@@ -528,18 +530,27 @@ if uploaded_file:
                 else:
                     cover_letter_text = uploaded_cl.read().decode("utf-8")
                 st.success(f"✅ Loaded from {uploaded_cl.name}")
+                st.session_state.analyze_cover_letter_trigger = True
             except Exception as e:
                 st.error(f"Error: {e}")
 
     with cl_tab2:
-        cover_letter_text = st.text_area("Paste your cover letter", height=150, key="cl_paste")
+        pasted_text = st.text_area("Paste your cover letter", height=150, key="cl_paste")
+        if pasted_text:
+            cover_letter_text = pasted_text
+            st.session_state.analyze_cover_letter_trigger = True
 
-    if cover_letter_text:
+    # Analyze button for manual trigger
+    analyze_cl_clicked = st.button("🔍 Analyze Cover Letter", key="analyze_cl_button")
+
+    # Trigger analysis
+    if cover_letter_text and (st.session_state.analyze_cover_letter_trigger or analyze_cl_clicked):
         st.session_state.cover_letter_text = cover_letter_text
         target_role = analysis.get('target_roles', ['your target role'])[0]
         
-        with st.spinner("Evaluating..."):
+        with st.spinner("Evaluating your cover letter..."):
             cl_analysis = analyze_cover_letter(cover_letter_text, target_role)
+            st.session_state.cover_letter_analysis = cl_analysis
         
         st.metric("Application Readiness", f"{cl_analysis.get('overall_score', 50)}/100")
         
@@ -560,9 +571,11 @@ if uploaded_file:
                 st.markdown("**Missing Elements:** " + ", ".join(missing[:3]))
         else:
             st.caption("🔒 **Upgrade to Premium to see detailed breakdown + improvement suggestions**")
+        
+        st.session_state.analyze_cover_letter_trigger = False
 
     # ---------------------------
-    # Job Search
+    # Job Search - FIXED
     # ---------------------------
     st.subheader("🌍 Job Search Settings")
     
@@ -570,20 +583,20 @@ if uploaded_file:
     
     col_loc1, col_loc2 = st.columns(2)
     with col_loc1:
-        country_option = st.selectbox("Country", ["us", "gb", "ca", "au", "de", "fr", "in", "za", "other"], index=0)
+        country_option = st.selectbox("Country", ["us", "gb", "ca", "au", "de", "fr", "in", "za", "other"], index=0, key="country_select")
     with col_loc2:
-        location_refine = st.text_input("City / Region", placeholder="e.g., London, Nairobi")
+        location_refine = st.text_input("City / Region", placeholder="e.g., London, Nairobi", key="location_input")
     
     if country_option == "other":
-        country_name = st.text_input("Country name", placeholder="Botswana, Ghana...")
+        country_name = st.text_input("Country name", placeholder="Botswana, Ghana...", key="country_name_input")
         if country_name and "botswana" in country_name.lower():
             st.info("🔎 Botswana job portals: [Dumela Jobs](https://www.dumelajobs.com) | [JobWeb](https://bw.jobwebbotswana.com) | [LinkedIn](https://www.linkedin.com/jobs)")
     else:
         country_name = country_option.upper()
     
-    manual_query = st.text_input("Override job title (optional)", placeholder="Leave empty to use detected roles")
+    manual_query = st.text_input("Override job title (optional)", placeholder="Leave empty to use detected roles", key="manual_query_input")
     
-    search_clicked = st.button("🔍 Search for Jobs", use_container_width=True, type="primary")
+    search_clicked = st.button("🔍 Search for Jobs", use_container_width=True, type="primary", key="search_jobs_button")
     
     st.subheader("💼 Matching Jobs")
     
@@ -602,7 +615,7 @@ if uploaded_file:
         if country_option == "other" and not country_name:
             st.error("Please enter your country name")
         else:
-            with st.spinner(f"Searching ({tier_label} tier)..."):
+            with st.spinner(f"Searching for jobs ({tier_label} tier)..."):
                 jobs = get_job_matches(cv_text, analysis, manual_query, country_option, country_name, location_refine, limit=job_limit)
                 if st.session_state.pro:
                     st.session_state.displayed_jobs_pro = jobs
@@ -611,6 +624,7 @@ if uploaded_file:
                 else:
                     st.session_state.displayed_jobs_free = jobs
     
+    # Display jobs based on tier
     display_jobs = []
     if st.session_state.pro:
         display_jobs = st.session_state.displayed_jobs_pro
@@ -620,17 +634,19 @@ if uploaded_file:
         display_jobs = st.session_state.displayed_jobs_free
     
     if display_jobs:
-        st.success(f"✅ Found {len(display_jobs)} jobs")
+        st.success(f"✅ Found {len(display_jobs)} jobs matching your profile!")
         for idx, job in enumerate(display_jobs):
             with st.expander(f"**{job['title']}** at {job['company']}"):
                 st.caption(job.get('date_display', '📅 Date not specified'))
                 st.markdown(f"📍 **Location:** {job.get('location', 'Not specified')}")
                 
                 if st.session_state.pro or st.session_state.premium:
-                    if st.button(f"🎯 Show Match Score", key=f"score_{idx}"):
-                        score, reason = score_job_match(cv_text, job['title'], job.get('description', ''))
-                        st.write(f"**Match Score:** {score}%")
-                        st.caption(f"📝 *{reason}*")
+                    col_score1, col_score2 = st.columns([1, 1])
+                    with col_score1:
+                        if st.button(f"🎯 Show Match Score", key=f"score_{idx}_{job['title']}"):
+                            score, reason = score_job_match(cv_text, job['title'], job.get('description', ''))
+                            st.write(f"**Match Score:** {score}%")
+                            st.caption(f"📝 *{reason}*")
                 else:
                     st.caption("🔒 **Match score available after upgrade**")
                 
@@ -640,9 +656,9 @@ if uploaded_file:
                 st.markdown(f"[Apply Now]({job['url']})")
         
         if not st.session_state.premium and not st.session_state.pro:
-            st.info("🔒 **Upgrade to Premium for 10+ jobs with match scores**")
+            st.info("🔒 **Upgrade to Premium ($9/month or $29 lifetime) for 10+ jobs with match scores!**")
         elif st.session_state.premium and not st.session_state.pro:
-            st.info("🚀 **Upgrade to Pro for 25+ jobs + CV/cover letter generators**")
+            st.info("🚀 **Upgrade to Pro ($19/month or $49 lifetime) for 25+ jobs + CV/cover letter generators!**")
 
     # ---------------------------
     # UPGRADE SECTION - OPTIMIZED PRICING
@@ -701,9 +717,9 @@ if uploaded_file:
                         success_url=APP_URL + "?success_premium_monthly=true",
                         cancel_url=APP_URL,
                     )
-                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely with Stripe</a>", unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Payment error: {e}")
         with col_up2:
             if st.button("⭐ Premium Lifetime $29", use_container_width=True):
                 try:
@@ -714,9 +730,9 @@ if uploaded_file:
                         success_url=APP_URL + "?success_premium_lifetime=true",
                         cancel_url=APP_URL,
                     )
-                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely with Stripe</a>", unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Payment error: {e}")
         with col_up3:
             if st.button("🚀 Pro Monthly $19", use_container_width=True):
                 try:
@@ -727,9 +743,9 @@ if uploaded_file:
                         success_url=APP_URL + "?success_pro_monthly=true",
                         cancel_url=APP_URL,
                     )
-                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely with Stripe</a>", unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Payment error: {e}")
         with col_up4:
             if st.button("🚀 Pro Lifetime $49", use_container_width=True):
                 try:
@@ -740,9 +756,9 @@ if uploaded_file:
                         success_url=APP_URL + "?success_pro_lifetime=true",
                         cancel_url=APP_URL,
                     )
-                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely with Stripe</a>", unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Payment error: {e}")
         
         st.markdown("---")
         st.caption("📝 **Unlock codes (for testing):**")
@@ -783,7 +799,7 @@ if uploaded_file:
             checklist_text = generate_ats_checklist(full_analysis)
             st.download_button("📋 Download ATS Checklist", checklist_text, file_name="ats_checklist.txt")
         
-        st.info("🚀 **Upgrade to Pro ($19/month or $49 lifetime)** for CV and cover letter generators!")
+        st.info("🚀 **Upgrade to Pro ($19/month or $49 lifetime) for CV and cover letter generators!**")
         
         col_up_pro1, col_up_pro2 = st.columns([3, 1])
         with col_up_pro2:
@@ -796,9 +812,9 @@ if uploaded_file:
                         success_url=APP_URL + "?success_pro_monthly=true",
                         cancel_url=APP_URL,
                     )
-                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely with Stripe</a>", unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Payment error: {e}")
 
     # ---------------------------
     # PRO FEATURES
