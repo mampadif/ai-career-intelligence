@@ -42,6 +42,12 @@ if "displayed_jobs_free" not in st.session_state:
     st.session_state.displayed_jobs_free = []
 if "displayed_jobs_pro" not in st.session_state:
     st.session_state.displayed_jobs_pro = []
+if "last_search_successful" not in st.session_state:
+    st.session_state.last_search_successful = False
+if "last_search_country" not in st.session_state:
+    st.session_state.last_search_country = None
+if "last_search_query" not in st.session_state:
+    st.session_state.last_search_query = None
 
 if "success" in st.query_params:
     st.session_state.paid = True
@@ -452,6 +458,7 @@ if uploaded_file:
     if search_clicked:
         if country_option == "other" and not country_name:
             st.error("Please enter your country name (e.g., Botswana)")
+            display_jobs = []
         else:
             with st.spinner("Searching for jobs..."):
                 jobs = get_job_matches(
@@ -459,6 +466,13 @@ if uploaded_file:
                     country_option, country_name, location_refine, 
                     limit=job_limit
                 )
+                if jobs:
+                    st.session_state.last_search_successful = True
+                    st.session_state.last_search_country = country_option
+                    st.session_state.last_search_query = manual_query
+                else:
+                    st.session_state.last_search_successful = False
+                
                 if not st.session_state.paid:
                     st.session_state.displayed_jobs_free = jobs
                 else:
@@ -468,6 +482,8 @@ if uploaded_file:
         display_jobs = st.session_state.displayed_jobs_free if not st.session_state.paid else st.session_state.displayed_jobs_pro
     
     if display_jobs:
+        st.success(f"✅ Found {len(display_jobs)} jobs matching your CV!")
+        
         for idx, job in enumerate(display_jobs):
             with st.expander(f"**{job['title']}** at {job['company']}"):
                 st.markdown(f"📍 **Location:** {job.get('location', 'Not specified')}")
@@ -485,11 +501,13 @@ if uploaded_file:
             st.info("🔓 **Upgrade to Pro** to see 20+ jobs and get AI match scores!")
     else:
         if search_clicked:
-            # Don't show error if we already showed guidance
             if not (country_option == "other" and country_name):
                 st.warning("No jobs found. Try adjusting the job title, country, or location.")
         else:
-            st.info("👆 Click 'Search for Jobs' to find opportunities.")
+            if st.session_state.displayed_jobs_free or st.session_state.displayed_jobs_pro:
+                st.info("👆 Click 'Search for Jobs' to run a new search with your current settings.")
+            else:
+                st.info("👆 Click 'Search for Jobs' to find opportunities matching your CV.")
 
     # ---------------------------
     # CONVERSION SECTION
@@ -571,6 +589,7 @@ if uploaded_file:
             display_pro_jobs = st.session_state.displayed_jobs_pro
         
         if display_pro_jobs:
+            st.success(f"✅ Found {len(display_pro_jobs)} jobs matching your CV!")
             for idx, job in enumerate(display_pro_jobs):
                 with st.expander(f"**{job['title']}** at {job['company']}"):
                     st.markdown(f"📍 **Location:** {job.get('location', 'Not specified')}")
@@ -585,7 +604,10 @@ if uploaded_file:
                 if not (country_option == "other" and country_name):
                     st.warning("No jobs found. Try adjusting job title or location.")
             else:
-                st.info("👆 Click 'Search for Jobs (Pro)' to find opportunities.")
+                if st.session_state.displayed_jobs_pro:
+                    st.info("👆 Click 'Search for Jobs (Pro)' to run a new search.")
+                else:
+                    st.info("👆 Click 'Search for Jobs (Pro)' to find opportunities.")
 
 else:
     st.info("👆 Please upload your CV to begin.")
