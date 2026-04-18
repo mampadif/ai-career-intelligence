@@ -161,7 +161,7 @@ if "success_pro_lifetime" in st.query_params:
     st.query_params.clear()
 
 # ---------------------------
-# 4. Helper Functions (existing + signature cleaner)
+# 4. Helper Functions
 # ---------------------------
 def extract_text_from_file(uploaded_file):
     if uploaded_file.name.endswith(".pdf"):
@@ -519,6 +519,15 @@ def remove_background_and_make_transparent(image_bytes):
     output.seek(0)
     return output
 
+@st.cache_data(ttl=3600)
+def generate_job_description(job_title, company):
+    """Use Gemini to create a short job description when Adzuna returns none."""
+    prompt = f"Write a one‑sentence (max 150 characters) job description for a {job_title} position at {company}."
+    try:
+        return model.generate_content(prompt).text.strip()
+    except:
+        return "Description not available."
+
 # ---------------------------
 # 5. UI - Hero Section
 # ---------------------------
@@ -757,16 +766,32 @@ if uploaded_file:
             with st.expander(f"**{job['title']}** at {job['company']}"):
                 st.caption(job.get('date_display', '📅 Date not specified'))
                 st.markdown(f"📍 **Location:** {job.get('location', 'Not specified')}")
+                
+                # --- FIX: Show description (AI-generated if missing) ---
+                description = job.get('description', '')
+                if description and len(description) > 20:
+                    st.markdown(f"📝 **Description:** {description[:400]}...")
+                else:
+                    # For paid users, generate description with Gemini
+                    if st.session_state.pro or st.session_state.premium:
+                        # Use cached generation to avoid repeated calls
+                        ai_desc = generate_job_description(job['title'], job['company'])
+                        st.markdown(f"📝 **Description:** {ai_desc}")
+                    else:
+                        st.markdown("📝 *Upgrade to Pro/Premium to see AI‑generated job descriptions.*")
+                
+                # Match score button (always AI-powered)
                 if st.session_state.pro or st.session_state.premium:
                     if st.button(f"🎯 Show Match Score", key=f"score_{idx}"):
-                        score, reason = score_job_match(cv_text, job['title'], job.get('description', ''))
+                        score, reason = score_job_match(cv_text, job['title'], description)
                         st.write(f"**Match Score:** {score}%")
                         st.caption(f"📝 {reason}")
                 else:
                     st.caption("🔒 **Match score available after upgrade**")
+                
                 st.markdown(f"[Apply Now]({job['url']})")
         if not st.session_state.premium and not st.session_state.pro:
-            st.info("🔒 **Upgrade to Premium for more jobs with match scores!**")
+            st.info("🔒 **Upgrade to Premium for more jobs with match scores & AI descriptions!**")
 
     # ---------------------------
     # Premium/Pro Features
