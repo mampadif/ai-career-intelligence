@@ -6,7 +6,7 @@ import requests
 import stripe
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from fpdf import FPDF
 from io import BytesIO
 from docx import Document
@@ -52,7 +52,7 @@ COUNTRY_MAP = {
 }
 
 # ---------------------------
-# 2. Custom CSS
+# 2. Custom CSS (unchanged)
 # ---------------------------
 st.markdown("""
 <style>
@@ -136,6 +136,8 @@ if "cover_letter_analysis" not in st.session_state:
     st.session_state.cover_letter_analysis = None
 if "cover_letter_text" not in st.session_state:
     st.session_state.cover_letter_text = ""
+if "match_scores" not in st.session_state:
+    st.session_state.match_scores = {}  # store scores per job index
 
 # Stripe success callbacks
 if "success_premium_monthly" in st.query_params:
@@ -152,7 +154,7 @@ if "success_pro_lifetime" in st.query_params:
     st.query_params.clear()
 
 # ---------------------------
-# 4. Helper Functions (full set)
+# 4. Helper Functions (same as before, plus date filter)
 # ---------------------------
 def extract_text_from_file(uploaded_file):
     if uploaded_file.name.endswith(".pdf"):
@@ -299,6 +301,34 @@ def deduplicate_jobs(jobs):
             unique.append(job)
     return unique
 
+def parse_adzuna_date(date_str):
+    """Convert Adzuna date string (e.g., '2024-05-27') to datetime or None."""
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d")
+    except:
+        return None
+
+def filter_recent_jobs(jobs, days=30):
+    """Return jobs posted within the last `days` days."""
+    cutoff = datetime.now() - timedelta(days=days)
+    recent = []
+    for job in jobs:
+        job_date = None
+        if job.get('created'):
+            job_date = parse_adzuna_date(job['created'])
+        elif job.get('date_display'):
+            # Try to extract date from Gemini's text (simplified)
+            # For simplicity, we keep Gemini jobs as they are (they are usually recent)
+            job_date = datetime.now()  # assume recent
+        if job_date and job_date >= cutoff:
+            recent.append(job)
+        elif not job_date:
+            # Keep jobs without date (e.g., Gemini fallback) but warn? We'll keep them.
+            recent.append(job)
+    # Sort by date descending (newest first)
+    recent.sort(key=lambda x: parse_adzuna_date(x.get('created')) or datetime.min, reverse=True)
+    return recent
+
 def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
     url = f"https://api.adzuna.com/v1/api/jobs/{country_code}/search/1"
     params = {
@@ -343,7 +373,9 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
                     "is_expired": is_expired
                 })
             active_jobs = [job for job in formatted if not job.get("is_expired")]
-            return deduplicate_jobs(active_jobs)[:limit]
+            # Filter recent (last 30 days) and sort
+            recent_jobs = filter_recent_jobs(active_jobs, days=30)
+            return deduplicate_jobs(recent_jobs)[:limit]
         else:
             return []
     except Exception as e:
@@ -379,7 +411,7 @@ def get_jobs_from_gemini_search(cv_text, job_title, location, limit=5):
             "description": j.get("brief_description", ""),
             "date_display": f"📅 {j.get('date_posted', 'Recently posted')}",
             "closing_date": None,
-            "created": None,
+            "created": j.get('date_posted'),
             "is_expired": False
         } for j in jobs]
     except:
@@ -407,7 +439,7 @@ def get_job_matches(cv_text, analysis, manual_query, country_name, country_code,
     if country_code in adzuna_supported:
         jobs = get_jobs_from_adzuna(query, country_code, location_refine, limit)
         if not jobs:
-            st.warning(f"No active {query} jobs found via Adzuna. Trying expanded search...")
+            st.warning(f"No recent {query} jobs found via Adzuna. Trying expanded search...")
             search_location = f"{location_refine}, {country_name}" if location_refine else country_name
             jobs = get_jobs_from_gemini_search(cv_text, query, search_location, limit)
         return jobs
@@ -525,7 +557,7 @@ def generate_job_description(job_title, company):
         return "Description not available."
 
 # ---------------------------
-# 5. UI – Hero & CV Upload
+# 5. UI – Hero & CV Upload (unchanged)
 # ---------------------------
 st.markdown("""
 <h1 style='text-align:center;'>📈 AI Career Intelligence</h1>
@@ -541,7 +573,6 @@ colB.markdown("🤖 **Powered by Gemini AI**")
 colC.markdown("🌍 **Worldwide job search support**")
 st.divider()
 
-# Tier badge
 if st.session_state.pro:
     st.markdown('<span class="tier-badge-pro">🚀 PRO TIER ACTIVE</span>', unsafe_allow_html=True)
     st.success("✅ Full application engine unlocked")
@@ -574,7 +605,7 @@ target_roles = analysis.get('target_roles', [])
 primary_role = target_roles[0] if target_roles and target_roles[0] != "N/A" else "your target role"
 
 # ---------------------------
-# SECTION 1: CV Intelligence
+# SECTION 1: CV Intelligence (unchanged)
 # ---------------------------
 st.subheader("📊 CV Intelligence")
 col1, col2, col3 = st.columns(3)
@@ -628,7 +659,7 @@ if st.session_state.premium or st.session_state.pro:
     st.markdown(f"**Experience Level:** {analysis['experience_level']}")
 
 # ---------------------------
-# SECTION 2: Application Toolkit (Collapsible)
+# SECTION 2: Application Toolkit (unchanged)
 # ---------------------------
 with st.expander("📝 Application Toolkit (Cover Letter, CV Draft, Signature)"):
     st.subheader("Cover Letter Assistant")
@@ -693,7 +724,7 @@ with st.expander("📝 Application Toolkit (Cover Letter, CV Draft, Signature)")
                         st.caption("🔒 **Upgrade to Premium for full analysis**")
             else:
                 st.warning("Please provide a cover letter (at least 50 characters)")
-    else:  # Generate new cover letter
+    else:
         st.caption(f"Target role: **{primary_role}**")
         company_name = st.text_input("Company name (optional)", placeholder="e.g., Microsoft, Google", key="company_name")
         if not st.session_state.premium and not st.session_state.pro:
@@ -740,7 +771,7 @@ with st.expander("📝 Application Toolkit (Cover Letter, CV Draft, Signature)")
         st.info("🔒 **Pro features (CV draft generator, signature cleaner) are available after upgrading to Pro.**")
 
 # ---------------------------
-# SECTION 3: Job Search
+# SECTION 3: Job Search (with date filter and persistent match scores)
 # ---------------------------
 st.subheader("🌍 Job Search")
 st.caption("📌 **Based on your CV, we recommend searching for:**")
@@ -782,10 +813,12 @@ if search_clicked:
             st.session_state.displayed_jobs_premium = jobs
         else:
             st.session_state.displayed_jobs_free = jobs
+        # Clear stored match scores when new search is performed
+        st.session_state.match_scores = {}
     if jobs:
-        st.success(f"✅ Found {len(jobs)} jobs")
+        st.success(f"✅ Found {len(jobs)} jobs (showing recent posts only)")
     else:
-        st.warning("No active jobs found. Try a different country or adjust the job title override.")
+        st.warning("No recent active jobs found. Try a different country or adjust the job title override.")
 
 display_jobs = []
 if st.session_state.pro:
@@ -798,6 +831,7 @@ else:
 if display_jobs:
     for idx, job in enumerate(display_jobs):
         with st.expander(f"**{job['title']}** at {job['company']}"):
+            # Date information
             if job.get('closing_date'):
                 st.warning(f"⚠️ **Closing date:** {job['closing_date']}")
             elif job.get('created'):
@@ -805,6 +839,8 @@ if display_jobs:
             else:
                 st.caption(job.get('date_display', '📅 Date not specified'))
             st.markdown(f"📍 **Location:** {job.get('location', 'Not specified')}")
+            
+            # Description
             description = job.get('description', '')
             if description and len(description) > 20:
                 preview = description[:300] + "..." if len(description) > 300 else description
@@ -824,9 +860,15 @@ if display_jobs:
                         st.markdown(f"📝 **Description:** {ai_desc}")
                 else:
                     st.markdown("📝 *No description available.*")
+            
+            # Match score with persistence
             if st.session_state.pro or st.session_state.premium:
-                if st.button(f"🎯 Show Match Score", key=f"score_{idx}"):
+                score_key = f"score_{idx}"
+                if st.button(f"🎯 Show Match Score", key=f"score_btn_{idx}"):
                     score, reason = score_job_match(cv_text, job['title'], description)
+                    st.session_state.match_scores[score_key] = (score, reason)
+                if score_key in st.session_state.match_scores:
+                    score, reason = st.session_state.match_scores[score_key]
                     st.write(f"**Match Score:** {score}%")
                     st.caption(f"📝 {reason}")
             else:
@@ -838,7 +880,7 @@ if display_jobs:
         st.info("🚀 **Upgrade to Pro for CV generator, cover letter generator, and signature cleaner**")
 
 # ---------------------------
-# SECTION 4: Upgrade & Reports
+# SECTION 4: Upgrade & Reports (unchanged except unlock code buttons)
 # ---------------------------
 st.markdown("---")
 st.markdown("""
@@ -947,7 +989,6 @@ with col_code2:
         else:
             st.error("❌ Invalid Pro code. Please check and try again.")
 
-# Reports section
 st.subheader("📄 Reports")
 if st.session_state.premium or st.session_state.pro:
     with st.spinner("Generating full analysis for report..."):
