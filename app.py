@@ -51,7 +51,7 @@ COUNTRY_MAP = {
 }
 
 # ---------------------------
-# 2. Custom CSS (unchanged)
+# 2. Custom CSS (keeps job cards looking good)
 # ---------------------------
 st.markdown("""
 <style>
@@ -86,16 +86,14 @@ body { background-color: #f8fafc; font-family: 'Inter', sans-serif; }
     border: 1px solid #e2e8f0;
 }
 .action-title { font-size: 1.3rem; font-weight: 700; margin-bottom: 1rem; color: #0f172a; }
-.job-card {
+/* Job card styling – applied to native containers */
+.job-container {
     background: white;
     border-radius: 20px;
     padding: 1.2rem;
     margin-bottom: 1rem;
     border: 1px solid #e2e8f0;
 }
-.job-title { font-size: 1.1rem; font-weight: 700; color: #0f172a; }
-.job-company { font-size: 0.85rem; color: #475569; margin-bottom: 0.5rem; }
-.job-meta { font-size: 0.75rem; color: #64748b; margin-bottom: 0.5rem; display: flex; gap: 1rem; flex-wrap: wrap; }
 .stButton > button {
     border-radius: 40px;
     background: linear-gradient(90deg, #4A90E2, #6C63FF);
@@ -161,7 +159,7 @@ if "success_pro_lifetime" in st.query_params:
     st.query_params.clear()
 
 # ---------------------------
-# 4. Helper Functions
+# 4. Helper Functions (full set)
 # ---------------------------
 def extract_text_from_file(uploaded_file):
     if uploaded_file.name.endswith(".pdf"):
@@ -350,7 +348,7 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
                     "created": created,
                     "is_expired": False
                 })
-            # Filter out jobs with closing_date in the past
+            # Remove jobs with closing_date in the past
             today = datetime.now().date()
             active = []
             for job in formatted:
@@ -670,7 +668,7 @@ with col_left:
                 st.info("🚀 Upgrade to Pro for CV draft generator")
         st.markdown('</div>', unsafe_allow_html=True)
 
-# Middle: Find Jobs (robust, only filters expired closing dates)
+# Middle: Find Jobs (no raw HTML, uses native containers)
 with col_mid:
     with st.container():
         st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -706,7 +704,7 @@ with col_mid:
                     st.session_state.jobs = []
 
         if st.session_state.jobs:
-            # Additional safety: remove any job with closing_date in the past (though get_jobs_from_adzuna already does it)
+            # Additional safety: remove any job with closing_date in the past
             today = datetime.now().date()
             filtered = []
             for job in st.session_state.jobs:
@@ -719,72 +717,70 @@ with col_mid:
             st.session_state.jobs = filtered[:job_limit]
 
             for idx, job in enumerate(st.session_state.jobs):
-                # Strip HTML from description
-                raw_desc = job.get('description', '')
-                clean_desc = re.sub(r'<[^>]+>', '', raw_desc)
-                clean_desc = re.sub(r'\s+', ' ', clean_desc).strip()
-                st.markdown(f"""
-                <div class="job-card">
-                    <div class="job-title">{job['title']}</div>
-                    <div class="job-company">{job['company']}</div>
-                    <div class="job-meta">
-                        <span>📍 {job.get('location', 'Not specified')}</span>
-                        <span>{job.get('date_display', '📅 Date not specified')}</span>
-                        {f"<span>⚠️ Closing: {job['closing_date']}</span>" if job.get('closing_date') else ""}
-                    </div>
-                    <div class="job-description">{clean_desc[:200]}...</div>
-                </div>
-                """, unsafe_allow_html=True)
+                # Use a native Streamlit container with CSS class for styling
+                with st.container():
+                    st.markdown(f"**{job['title']}**")
+                    st.markdown(f"*{job['company']}*")
+                    col_date, col_loc = st.columns(2)
+                    with col_date:
+                        st.caption(job.get('date_display', '📅 Date not specified'))
+                    with col_loc:
+                        st.caption(f"📍 {job.get('location', 'Not specified')}")
+                    # Clean description (strip HTML)
+                    raw_desc = job.get('description', '')
+                    clean_desc = re.sub(r'<[^>]+>', '', raw_desc)
+                    clean_desc = re.sub(r'\s+', ' ', clean_desc).strip()
+                    st.markdown(clean_desc[:200] + ("..." if len(clean_desc) > 200 else ""))
 
-                # Match score
-                score_key = f"score_{idx}"
-                if st.session_state.premium or st.session_state.pro:
-                    if st.button(f"🎯 Show Match Score", key=f"match_btn_{idx}"):
-                        score, reason = score_job_match(st.session_state.cv_text, job['title'], raw_desc)
-                        st.session_state.match_scores[score_key] = (score, reason)
-                    if score_key in st.session_state.match_scores:
-                        score, reason = st.session_state.match_scores[score_key]
-                        st.write(f"**Match Score:** {score}%")
-                        st.caption(f"📝 {reason}")
-                else:
-                    st.caption("🔒 Match score available after upgrade")
+                    # Match score button
+                    score_key = f"score_{idx}"
+                    if st.session_state.premium or st.session_state.pro:
+                        if st.button(f"🎯 Show Match Score", key=f"match_btn_{idx}"):
+                            score, reason = score_job_match(st.session_state.cv_text, job['title'], raw_desc)
+                            st.session_state.match_scores[score_key] = (score, reason)
+                        if score_key in st.session_state.match_scores:
+                            score, reason = st.session_state.match_scores[score_key]
+                            st.write(f"**Match Score:** {score}%")
+                            st.caption(f"📝 {reason}")
+                    else:
+                        st.caption("🔒 Match score available after upgrade")
 
-                # Job-specific cover letter
-                if st.button(f"✉️ Generate Cover Letter for this job", key=f"cover_btn_{idx}"):
-                    with st.spinner("Generating tailored cover letter..."):
-                        if st.session_state.premium or st.session_state.pro:
-                            job_desc = job.get('description', '')
-                            if not job_desc or len(job_desc) < 20:
-                                job_desc = f"A {job['title']} position at {job['company']}."
-                            letter = generate_job_specific_cover_letter(
-                                st.session_state.cv_text,
-                                job['title'],
-                                job['company'],
-                                job_desc
-                            )
-                            st.session_state.cover_letter_for_job = letter
-                        else:
-                            st.session_state.cover_letter_for_job = "Upgrade to Premium to generate cover letters."
-                if st.session_state.cover_letter_for_job:
-                    st.text_area("Generated Cover Letter", st.session_state.cover_letter_for_job, height=250)
-                    docx_file = create_docx_from_text(st.session_state.cover_letter_for_job, "Cover Letter")
-                    st.download_button("📥 Download Cover Letter", docx_file, file_name="cover_letter.docx")
+                    # Cover letter button
+                    if st.button(f"✉️ Generate Cover Letter for this job", key=f"cover_btn_{idx}"):
+                        with st.spinner("Generating tailored cover letter..."):
+                            if st.session_state.premium or st.session_state.pro:
+                                job_desc = job.get('description', '')
+                                if not job_desc or len(job_desc) < 20:
+                                    job_desc = f"A {job['title']} position at {job['company']}."
+                                letter = generate_job_specific_cover_letter(
+                                    st.session_state.cv_text,
+                                    job['title'],
+                                    job['company'],
+                                    job_desc
+                                )
+                                st.session_state.cover_letter_for_job = letter
+                            else:
+                                st.session_state.cover_letter_for_job = "Upgrade to Premium to generate cover letters."
+                    if st.session_state.cover_letter_for_job:
+                        st.text_area("Generated Cover Letter", st.session_state.cover_letter_for_job, height=250)
+                        docx_file = create_docx_from_text(st.session_state.cover_letter_for_job, "Cover Letter")
+                        st.download_button("📥 Download Cover Letter", docx_file, file_name="cover_letter.docx")
 
-                # Save job
-                if st.button(f"💾 Save this job", key=f"save_{idx}"):
-                    if not any(saved.get('url') == job['url'] for saved in st.session_state.saved_jobs):
-                        st.session_state.saved_jobs.append({
-                            "title": job['title'],
-                            "company": job['company'],
-                            "url": job['url'],
-                            "location": job.get('location', ''),
-                            "date_display": job.get('date_display', ''),
-                            "applied": False,
-                            "note": ""
-                        })
-                        st.success("Job saved!")
-                st.markdown(f"[Apply Now]({job['url']})")
-                st.markdown("---")
+                    # Save job button
+                    if st.button(f"💾 Save this job", key=f"save_{idx}"):
+                        if not any(saved.get('url') == job['url'] for saved in st.session_state.saved_jobs):
+                            st.session_state.saved_jobs.append({
+                                "title": job['title'],
+                                "company": job['company'],
+                                "url": job['url'],
+                                "location": job.get('location', ''),
+                                "date_display": job.get('date_display', ''),
+                                "applied": False,
+                                "note": ""
+                            })
+                            st.success("Job saved!")
+                    st.markdown(f"[Apply Now]({job['url']})")
+                    st.markdown("---")
         st.markdown('</div>', unsafe_allow_html=True)
 
 # Right: Saved Jobs
@@ -809,7 +805,7 @@ with col_right:
         st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------------------
-# Upgrade & Reports (dark mode friendly, no checkboxes)
+# Upgrade & Reports (dark mode friendly)
 # ---------------------------
 st.markdown("---")
 st.subheader("🚀 Upgrade Your Career Toolkit")
