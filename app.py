@@ -34,7 +34,7 @@ genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-2.5-flash")
 stripe.api_key = STRIPE_SECRET_KEY
 
-# Country mapping
+# Country mapping – supports any country via "Other" + AI fallback
 COUNTRY_MAP = {
     "United States": "us",
     "United Kingdom": "gb",
@@ -347,6 +347,8 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
                     "url": j.get("redirect_url", "#"),
                     "description": j.get("description", ""),
                     "date_display": date_display,
+                    "closing_date": closing_date,
+                    "created": created,
                     "is_expired": is_expired
                 })
             return deduplicate_jobs(formatted)[:limit]
@@ -367,7 +369,8 @@ def get_jobs_from_gemini_search(cv_text, job_title, location, limit=5):
                     "company_name": "...",
                     "location": "...",
                     "apply_url": "...",
-                    "brief_description": "..."
+                    "brief_description": "...",
+                    "date_posted": "..."
                 }}
             ]
         }}
@@ -382,13 +385,16 @@ def get_jobs_from_gemini_search(cv_text, job_title, location, limit=5):
             "location": j.get("location", location),
             "url": j.get("apply_url", "#"),
             "description": j.get("brief_description", ""),
-            "date_display": "📅 Recently posted",
+            "date_display": f"📅 {j.get('date_posted', 'Recently posted')}",
+            "closing_date": None,
+            "created": None,
             "is_expired": False
         } for j in jobs]
     except:
         return []
 
 def get_job_matches(cv_text, analysis, manual_query, country_name, country_code, location_refine, limit=5):
+    # CV-FIRST: always use detected roles unless manual override
     target_roles = analysis.get("target_roles", [])
     if target_roles and target_roles[0] != "N/A":
         query = target_roles[0]
@@ -703,7 +709,7 @@ if uploaded_file:
                 st.download_button("📥 Download", docx_file, file_name="cover_letter.docx")
 
     # ---------------------------
-    # Job Search (CV-First)
+    # Job Search (CV-First, Worldwide)
     # ---------------------------
     st.subheader("🌍 Job Search")
     
@@ -718,14 +724,14 @@ if uploaded_file:
         country_display = st.selectbox("Country", list(COUNTRY_MAP.keys()), index=0, key="country_select")
         country_code = COUNTRY_MAP[country_display]
     with col_loc2:
-        location_refine = st.text_input("City / Region", placeholder="e.g., London, Nairobi, Gaborone", key="location_input")
+        location_refine = st.text_input("City / Region (worldwide)", placeholder="e.g., London, Nairobi, Gaborone, Remote", key="location_input")
 
     if country_display == "Other":
-        st.info("🌍 Using AI-powered search for your selected country")
+        st.info("🌍 Using AI-powered search for your selected country – we will find jobs even if Adzuna doesn't cover it.")
         if location_refine and "botswana" in location_refine.lower():
             st.markdown("🔎 **Botswana job portals:** [Dumela](https://www.dumelajobs.com) | [JobWeb](https://bw.jobwebbotswana.com) | [LinkedIn](https://www.linkedin.com/jobs)")
 
-    st.caption("✏️ Optional override - only if you want to search for a different role")
+    st.caption("✏️ Optional override – only use if you want to search for a different role (CV‑first is still recommended)")
     manual_query = st.text_input("Override job title (optional)", placeholder=f"Leave empty to use {target_roles[0] if target_roles and target_roles[0] != 'N/A' else 'CV-detected role'}", key="manual_query_input")
     
     search_clicked = st.button("🔍 Search for Jobs", use_container_width=True, type="primary", key="search_jobs_button")
@@ -740,7 +746,7 @@ if uploaded_file:
         job_limit = 1
 
     if search_clicked:
-        with st.spinner("Searching for jobs matching your CV..."):
+        with st.spinner("Searching for jobs matching your CV (worldwide)..."):
             jobs = get_job_matches(cv_text, analysis, manual_query, country_display, country_code, location_refine, limit=job_limit)
             if st.session_state.pro:
                 st.session_state.displayed_jobs_pro = jobs
@@ -751,7 +757,7 @@ if uploaded_file:
         if jobs:
             st.success(f"✅ Found {len(jobs)} jobs")
         else:
-            st.warning("No jobs found. Try a different country.")
+            st.warning("No jobs found. Try a different country or adjust the job title override.")
 
     display_jobs = []
     if st.session_state.pro:
@@ -764,23 +770,35 @@ if uploaded_file:
     if display_jobs:
         for idx, job in enumerate(display_jobs):
             with st.expander(f"**{job['title']}** at {job['company']}"):
+                # Date information
                 st.caption(job.get('date_display', '📅 Date not specified'))
+                
                 st.markdown(f"📍 **Location:** {job.get('location', 'Not specified')}")
                 
-                # --- FIX: Show description (AI-generated if missing) ---
+                # ----- Description with expand/collapse for premium users -----
                 description = job.get('description', '')
                 if description and len(description) > 20:
-                    st.markdown(f"📝 **Description:** {description[:400]}...")
+                    preview = description[:300] + "..." if len(description) > 300 else description
+                    st.markdown(f"📝 **Description:** {preview}")
+                    if len(description) > 300:
+                        if st.button("📖 Read full description", key=f"desc_full_{idx}"):
+                            st.markdown(f"📝 **Full description:**\n\n{description}")
                 else:
                     # For paid users, generate description with Gemini
                     if st.session_state.pro or st.session_state.premium:
-                        # Use cached generation to avoid repeated calls
-                        ai_desc = generate_job_description(job['title'], job['company'])
-                        st.markdown(f"📝 **Description:** {ai_desc}")
+                        with st.spinner("Fetching job details..."):
+                            ai_desc = generate_job_description(job['title'], job['company'])
+                            st.markdown(f"📝 **Description:** {ai_desc}")
                     else:
                         st.markdown("📝 *Upgrade to Pro/Premium to see AI‑generated job descriptions.*")
                 
-                # Match score button (always AI-powered)
+                # ----- Closing date (if available) -----
+                if job.get('closing_date'):
+                    st.warning(f"⚠️ **Closing date:** {job['closing_date']}")
+                elif job.get('created'):
+                    st.caption(f"📅 **Posted on:** {job['created']}")
+                
+                # ----- Match score button (Gemini AI) -----
                 if st.session_state.pro or st.session_state.premium:
                     if st.button(f"🎯 Show Match Score", key=f"score_{idx}"):
                         score, reason = score_job_match(cv_text, job['title'], description)
@@ -791,7 +809,9 @@ if uploaded_file:
                 
                 st.markdown(f"[Apply Now]({job['url']})")
         if not st.session_state.premium and not st.session_state.pro:
-            st.info("🔒 **Upgrade to Premium for more jobs with match scores & AI descriptions!**")
+            st.info("🔒 **Upgrade to Premium for more jobs, match scores & AI descriptions!**")
+        elif st.session_state.premium and not st.session_state.pro:
+            st.info("🚀 **Upgrade to Pro for CV generator, cover letter generator, and signature cleaner**")
 
     # ---------------------------
     # Premium/Pro Features
