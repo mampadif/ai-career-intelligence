@@ -16,7 +16,7 @@ import numpy as np
 # ---------------------------
 # 1. Configuration & Secrets
 # ---------------------------
-st.set_page_config(page_title="AI Career Intelligence", page_icon="📈", layout="centered")
+st.set_page_config(page_title="AI Career Intelligence", page_icon="📈", layout="wide")
 
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 STRIPE_SECRET_KEY = st.secrets["STRIPE_SECRET_KEY"]
@@ -34,7 +34,7 @@ genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-2.5-flash")
 stripe.api_key = STRIPE_SECRET_KEY
 
-# Country mapping – supports any country via "Other" + AI fallback
+# Country mapping
 COUNTRY_MAP = {
     "United States": "us",
     "United Kingdom": "gb",
@@ -84,7 +84,6 @@ body { background-color: #f7f9fc; }
     margin: 20px 0;
     text-align: center;
 }
-.upgrade-box h3, .upgrade-box p { color: white; }
 .pricing-card {
     background-color: #ffffff;
     border-radius: 12px;
@@ -97,15 +96,6 @@ body { background-color: #f7f9fc; }
 .pricing-card h3 { margin-top: 0; color: #4A90E2; }
 .pricing-card .price { font-size: 28px; font-weight: bold; color: #2c3e50; }
 .pricing-card .period { font-size: 14px; color: #7f8c8d; }
-.pricing-card .launch-badge {
-    background-color: #6C63FF;
-    color: white;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 12px;
-    display: inline-block;
-    margin-bottom: 12px;
-}
 .tier-badge-free, .tier-badge-premium, .tier-badge-pro {
     padding: 4px 12px;
     border-radius: 20px;
@@ -351,7 +341,6 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
                     "created": created,
                     "is_expired": is_expired
                 })
-            # Filter out expired jobs
             active_jobs = [job for job in formatted if not job.get("is_expired")]
             return deduplicate_jobs(active_jobs)[:limit]
         else:
@@ -396,7 +385,6 @@ def get_jobs_from_gemini_search(cv_text, job_title, location, limit=5):
         return []
 
 def get_job_matches(cv_text, analysis, manual_query, country_name, country_code, location_refine, limit=5):
-    # CV-FIRST: always use detected roles unless manual override
     target_roles = analysis.get("target_roles", [])
     if target_roles and target_roles[0] != "N/A":
         query = target_roles[0]
@@ -529,7 +517,6 @@ def remove_background_and_make_transparent(image_bytes):
 
 @st.cache_data(ttl=3600)
 def generate_job_description(job_title, company):
-    """Use Gemini to create a short job description when Adzuna returns none."""
     prompt = f"Write a one‑sentence (max 150 characters) job description for a {job_title} position at {company}."
     try:
         return model.generate_content(prompt).text.strip()
@@ -537,7 +524,7 @@ def generate_job_description(job_title, company):
         return "Description not available."
 
 # ---------------------------
-# 5. UI - Hero Section
+# 5. UI – Hero & CV Upload
 # ---------------------------
 st.markdown("""
 <h1 style='text-align:center;'>📈 AI Career Intelligence</h1>
@@ -565,20 +552,38 @@ else:
 
 uploaded_file = st.file_uploader("Upload your CV (PDF or DOCX)", type=["pdf", "docx"])
 
-if uploaded_file:
-    cv_text = extract_text_from_file(uploaded_file)
-    st.session_state.cv_text = cv_text
+if not uploaded_file:
+    st.info("👆 Please upload your CV to begin.")
+    st.stop()
 
-    with st.status("Analyzing your CV...", expanded=True) as status:
-        st.write("📄 Reading CV document...")
-        analysis = analyze_cv_cached(cv_text, full=False)
-        st.session_state.analysis_free = analysis
-        st.write("🔍 Analyzing keywords...")
-        st.write("📊 Calculating ATS compatibility...")
-        st.write("🎯 Identifying target roles...")
-        status.update(label="Analysis complete!", state="complete")
+cv_text = extract_text_from_file(uploaded_file)
+st.session_state.cv_text = cv_text
 
-    # Metrics
+with st.status("Analyzing your CV...", expanded=True) as status:
+    st.write("📄 Reading CV document...")
+    analysis = analyze_cv_cached(cv_text, full=False)
+    st.session_state.analysis_free = analysis
+    st.write("🔍 Analyzing keywords...")
+    st.write("📊 Calculating ATS compatibility...")
+    st.write("🎯 Identifying target roles...")
+    status.update(label="Analysis complete!", state="complete")
+
+target_roles = analysis.get('target_roles', [])
+primary_role = target_roles[0] if target_roles and target_roles[0] != "N/A" else "your target role"
+
+# ---------------------------
+# 6. Tabs – Organised Workflow
+# ---------------------------
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📊 CV Intelligence",
+    "📝 Application Toolkit",
+    "🌍 Job Search",
+    "⭐ Upgrade",
+    "📄 Reports"
+])
+
+# ----- TAB 1: CV Intelligence -----
+with tab1:
     col1, col2, col3 = st.columns(3)
     with col1:
         st.write("📊 Overall CV Strength")
@@ -593,25 +598,20 @@ if uploaded_file:
         st.write("🎯 Interview Likelihood")
         st.caption(f"**{analysis.get('interview_likelihood', 'Moderate')}**")
         st.caption(f"📊 *Estimated {interview_pct} chance*")
-
-    # Target roles
+    
     st.subheader("📌 Target Roles (Detected from Your CV)")
-    target_roles = analysis.get('target_roles', [])
     if target_roles and target_roles[0] != "N/A":
         for role in target_roles:
             st.info(f"📌 {role}")
-        primary_role = target_roles[0]
     else:
         st.warning("No specific roles detected")
-        primary_role = st.text_input("Enter your target job title", key="manual_role_input")
-
-    # Free insights
-    st.subheader("🔍 Key Insights (Limited Preview)")
-    strengths = analysis.get('top_strengths', [])[:2]
-    weaknesses = analysis.get('top_weaknesses', [])[:2]
-    st.markdown("**Strengths:**\n" + "\n".join(f"- {s}" for s in strengths))
-    st.markdown("**Weaknesses:**\n" + "\n".join(f"- {w}" for w in weaknesses))
-
+    
+    st.subheader("🔍 Key Insights")
+    strengths = analysis.get('top_strengths', [])
+    weaknesses = analysis.get('top_weaknesses', [])
+    st.markdown("**Strengths:**\n" + "\n".join(f"- {s}" for s in strengths[:2]))
+    st.markdown("**Weaknesses:**\n" + "\n".join(f"- {w}" for w in weaknesses[:2]))
+    
     if not st.session_state.premium and not st.session_state.pro:
         with st.spinner("Analyzing keyword gaps..."):
             preview_keywords = get_missing_keywords_preview(cv_text)
@@ -622,14 +622,22 @@ if uploaded_file:
             blurred = "Keywords detected after upgrade"
         st.caption(f"🔒 **Missing keywords preview:** {blurred}")
         st.caption("🔒 **Upgrade to Premium to see full insights**")
-
+    else:
+        full_analysis = analyze_cv_cached(cv_text, full=True)
+        st.subheader("🔑 Missing ATS Keywords")
+        st.markdown(", ".join(full_analysis.get('missing_keywords', [])))
+        st.subheader("✍️ Rewrite Suggestions")
+        for sug in full_analysis.get('rewrite_suggestions', []):
+            st.markdown(f"- {sug}")
+        if st.session_state.premium and not st.session_state.pro:
+            st.info("🚀 **Upgrade to Pro for CV and cover letter generators**")
+    
     if st.session_state.premium or st.session_state.pro:
         st.info(f"**Recruiter Assessment:** {analysis['recruiter_verdict']}")
         st.markdown(f"**Experience Level:** {analysis['experience_level']}")
 
-    # ---------------------------
-    # Cover Letter Assistant
-    # ---------------------------
+# ----- TAB 2: Application Toolkit -----
+with tab2:
     st.subheader("📝 Cover Letter Assistant")
     cl_mode = st.radio(
         "What would you like to do?",
@@ -637,11 +645,10 @@ if uploaded_file:
         horizontal=True,
         key="cl_mode"
     )
-
+    
     if cl_mode == "📄 Review my existing cover letter":
         st.caption(f"Target role: **{primary_role}**")
         cl_tab1, cl_tab2 = st.tabs(["📁 Upload", "📝 Paste"])
-        
         with cl_tab1:
             uploaded_cl = st.file_uploader("Upload cover letter", type=["pdf", "docx", "txt"], key="cl_review_upload")
             if uploaded_cl:
@@ -654,10 +661,9 @@ if uploaded_file:
                         st.session_state.cover_letter_text = "\n".join(para.text for para in doc.paragraphs)
                     else:
                         st.session_state.cover_letter_text = uploaded_cl.read().decode("utf-8")
-                    st.success(f"✅ Loaded")
+                    st.success("✅ Loaded")
                 except Exception as e:
                     st.error(f"Error: {e}")
-        
         with cl_tab2:
             pasted_text = st.text_area("Paste your cover letter", height=150, key="cl_review_paste")
             if pasted_text:
@@ -694,8 +700,7 @@ if uploaded_file:
                         st.caption("🔒 **Upgrade to Premium for full analysis**")
             else:
                 st.warning("Please provide a cover letter (at least 50 characters)")
-
-    else:
+    else:  # Generate new cover letter
         st.caption(f"Target role: **{primary_role}**")
         company_name = st.text_input("Company name (optional)", placeholder="e.g., Microsoft, Google", key="company_name")
         if not st.session_state.premium and not st.session_state.pro:
@@ -709,161 +714,9 @@ if uploaded_file:
                 st.text_area("Your cover letter", st.session_state.generated_cover_letter, height=250)
                 docx_file = create_docx_from_text(st.session_state.generated_cover_letter, "Cover Letter")
                 st.download_button("📥 Download", docx_file, file_name="cover_letter.docx")
-
-    # ---------------------------
-    # Job Search (CV-First, Worldwide)
-    # ---------------------------
-    st.subheader("🌍 Job Search")
     
-    st.caption("📌 **Based on your CV, we recommend searching for:**")
-    if target_roles and target_roles[0] != "N/A":
-        st.info(f"🎯 {target_roles[0]}")
-    else:
-        st.warning("No specific roles detected")
-    
-    col_loc1, col_loc2 = st.columns(2)
-    with col_loc1:
-        country_display = st.selectbox("Country", list(COUNTRY_MAP.keys()), index=0, key="country_select")
-        country_code = COUNTRY_MAP[country_display]
-    with col_loc2:
-        location_refine = st.text_input("City / Region (worldwide)", placeholder="e.g., London, Nairobi, Gaborone, Remote", key="location_input")
-
-    if country_display == "Other":
-        st.info("🌍 Using AI-powered search for your selected country – we will find jobs even if Adzuna doesn't cover it.")
-        if location_refine and "botswana" in location_refine.lower():
-            st.markdown("🔎 **Botswana job portals:** [Dumela](https://www.dumelajobs.com) | [JobWeb](https://bw.jobwebbotswana.com) | [LinkedIn](https://www.linkedin.com/jobs)")
-
-    st.caption("✏️ Optional override – only use if you want to search for a different role (CV‑first is still recommended)")
-    manual_query = st.text_input("Override job title (optional)", placeholder=f"Leave empty to use {target_roles[0] if target_roles and target_roles[0] != 'N/A' else 'CV-detected role'}", key="manual_query_input")
-    
-    search_clicked = st.button("🔍 Search for Jobs", use_container_width=True, type="primary", key="search_jobs_button")
-    
-    st.subheader("💼 Matching Jobs")
-    
+    st.markdown("---")
     if st.session_state.pro:
-        job_limit = 25
-    elif st.session_state.premium:
-        job_limit = 10
-    else:
-        job_limit = 1
-
-    if search_clicked:
-        with st.spinner("Searching for jobs matching your CV (worldwide)..."):
-            jobs = get_job_matches(cv_text, analysis, manual_query, country_display, country_code, location_refine, limit=job_limit)
-            if st.session_state.pro:
-                st.session_state.displayed_jobs_pro = jobs
-            elif st.session_state.premium:
-                st.session_state.displayed_jobs_premium = jobs
-            else:
-                st.session_state.displayed_jobs_free = jobs
-        if jobs:
-            st.success(f"✅ Found {len(jobs)} jobs")
-        else:
-            st.warning("No active jobs found. Try a different country or adjust the job title override.")
-
-    display_jobs = []
-    if st.session_state.pro:
-        display_jobs = st.session_state.displayed_jobs_pro
-    elif st.session_state.premium:
-        display_jobs = st.session_state.displayed_jobs_premium
-    else:
-        display_jobs = st.session_state.displayed_jobs_free
-
-    if display_jobs:
-        for idx, job in enumerate(display_jobs):
-            with st.expander(f"**{job['title']}** at {job['company']}"):
-                # Date information – always show if available
-                if job.get('closing_date'):
-                    st.warning(f"⚠️ **Closing date:** {job['closing_date']}")
-                elif job.get('created'):
-                    st.caption(f"📅 **Posted on:** {job['created']}")
-                else:
-                    st.caption(job.get('date_display', '📅 Date not specified'))
-                
-                st.markdown(f"📍 **Location:** {job.get('location', 'Not specified')}")
-                
-                # ----- Description with expand/collapse -----
-                description = job.get('description', '')
-                if description and len(description) > 20:
-                    # Show preview first
-                    preview = description[:300] + "..." if len(description) > 300 else description
-                    st.markdown(f"📝 **Description:** {preview}")
-                    # If longer than 300 chars, provide a button to expand
-                    if len(description) > 300:
-                        # Use session state to remember expansion per job
-                        expand_key = f"exp_desc_{idx}"
-                        if expand_key not in st.session_state:
-                            st.session_state[expand_key] = False
-                        if st.button("📖 Read full description", key=f"desc_btn_{idx}"):
-                            st.session_state[expand_key] = not st.session_state[expand_key]
-                        if st.session_state[expand_key]:
-                            st.markdown(f"📝 **Full description:**\n\n{description}")
-                else:
-                    # For paid users, generate description with Gemini if missing
-                    if (st.session_state.pro or st.session_state.premium) and (not description or len(description) < 20):
-                        with st.spinner("Fetching job details..."):
-                            ai_desc = generate_job_description(job['title'], job['company'])
-                            st.markdown(f"📝 **Description:** {ai_desc}")
-                    else:
-                        st.markdown("📝 *No description available.*")
-                
-                # ----- Match score button (Gemini AI) -----
-                if st.session_state.pro or st.session_state.premium:
-                    if st.button(f"🎯 Show Match Score", key=f"score_{idx}"):
-                        score, reason = score_job_match(cv_text, job['title'], description)
-                        st.write(f"**Match Score:** {score}%")
-                        st.caption(f"📝 {reason}")
-                else:
-                    st.caption("🔒 **Match score available after upgrade**")
-                
-                st.markdown(f"[Apply Now]({job['url']})")
-        if not st.session_state.premium and not st.session_state.pro:
-            st.info("🔒 **Upgrade to Premium for more jobs, match scores & AI descriptions!**")
-        elif st.session_state.premium and not st.session_state.pro:
-            st.info("🚀 **Upgrade to Pro for CV generator, cover letter generator, and signature cleaner**")
-
-    # ---------------------------
-    # Premium/Pro Features
-    # ---------------------------
-    if st.session_state.premium and not st.session_state.pro:
-        st.markdown("---")
-        st.subheader("⭐ Premium Features")
-        with st.spinner("Generating full analysis..."):
-            full_analysis = analyze_cv_cached(cv_text, full=True)
-        st.subheader("🔑 Missing Keywords")
-        st.markdown(", ".join(full_analysis.get('missing_keywords', [])))
-        st.subheader("✍️ Rewrite Suggestions")
-        for sug in full_analysis.get('rewrite_suggestions', []):
-            st.markdown(f"- {sug}")
-        col_pdf, col_check = st.columns(2)
-        with col_pdf:
-            pdf_data = generate_pdf_report(full_analysis)
-            st.download_button("📥 PDF Report", pdf_data, file_name="career_report.pdf")
-        with col_check:
-            checklist_text = generate_ats_checklist(full_analysis)
-            st.download_button("📋 ATS Checklist", checklist_text, file_name="ats_checklist.txt")
-        st.info("🚀 **Upgrade to Pro for CV and cover letter generators**")
-
-    elif st.session_state.pro:
-        st.markdown("---")
-        st.subheader("🚀 Pro Features")
-        with st.spinner("Generating full analysis..."):
-            full_analysis = analyze_cv_cached(cv_text, full=True)
-        st.subheader("🔑 Missing Keywords")
-        st.markdown(", ".join(full_analysis.get('missing_keywords', [])))
-        st.subheader("✍️ Rewrite Suggestions")
-        for sug in full_analysis.get('rewrite_suggestions', []):
-            st.markdown(f"- {sug}")
-        col_pdf, col_check = st.columns(2)
-        with col_pdf:
-            pdf_data = generate_pdf_report(full_analysis)
-            st.download_button("📥 Executive PDF Report", pdf_data, file_name="executive_report.pdf")
-        with col_check:
-            checklist_text = generate_ats_checklist(full_analysis)
-            st.download_button("📋 ATS Checklist", checklist_text, file_name="ats_checklist.txt")
-        st.markdown("---")
-        
-        # CV Draft Generator
         st.subheader("🧾 Recruiter-Optimized CV Draft")
         if st.button("📄 Generate Improved CV Draft", use_container_width=True):
             with st.spinner("Generating..."):
@@ -874,10 +727,8 @@ if uploaded_file:
             st.download_button("📥 Download CV", docx_file, file_name="improved_cv.docx")
         
         st.markdown("---")
-        
-        # Signature Cleaner
         st.subheader("✍️ Signature Cleaner (Transparent PNG)")
-        st.caption("Upload a photo of your handwritten signature – we'll remove the background and give you a transparent PNG for digital documents.")
+        st.caption("Upload a photo of your handwritten signature – we'll remove the background and give you a transparent PNG.")
         uploaded_signature = st.file_uploader("Upload signature image (JPG, PNG, or JPEG)", type=["jpg", "jpeg", "png"], key="signature_upload")
         if uploaded_signature:
             with st.spinner("Cleaning signature..."):
@@ -893,107 +744,211 @@ if uploaded_file:
                     )
                 except Exception as e:
                     st.error(f"Error processing image: {e}")
+    else:
+        st.info("🔒 **Pro features (CV draft generator, signature cleaner) are available after upgrading to Pro.**")
 
-    # ---------------------------
-    # Upgrade Section
-    # ---------------------------
-    if not st.session_state.premium and not st.session_state.pro:
-        st.markdown("---")
+# ----- TAB 3: Job Search -----
+with tab3:
+    st.caption("📌 **Based on your CV, we recommend searching for:**")
+    if target_roles and target_roles[0] != "N/A":
+        st.info(f"🎯 {target_roles[0]}")
+    else:
+        st.warning("No specific roles detected")
+    
+    col_loc1, col_loc2 = st.columns(2)
+    with col_loc1:
+        country_display = st.selectbox("Country", list(COUNTRY_MAP.keys()), index=0, key="country_select")
+        country_code = COUNTRY_MAP[country_display]
+    with col_loc2:
+        location_refine = st.text_input("City / Region (worldwide)", placeholder="e.g., London, Nairobi, Gaborone, Remote", key="location_input")
+    
+    if country_display == "Other":
+        st.info("🌍 Using AI-powered search for your selected country – we will find jobs even if Adzuna doesn't cover it.")
+        if location_refine and "botswana" in location_refine.lower():
+            st.markdown("🔎 **Botswana job portals:** [Dumela](https://www.dumelajobs.com) | [JobWeb](https://bw.jobwebbotswana.com) | [LinkedIn](https://www.linkedin.com/jobs)")
+    
+    st.caption("✏️ Optional override – only use if you want to search for a different role (CV‑first is still recommended)")
+    manual_query = st.text_input("Override job title (optional)", placeholder=f"Leave empty to use {target_roles[0] if target_roles and target_roles[0] != 'N/A' else 'CV-detected role'}", key="manual_query_input")
+    
+    search_clicked = st.button("🔍 Search for Jobs", use_container_width=True, type="primary", key="search_jobs_button")
+    
+    if st.session_state.pro:
+        job_limit = 25
+    elif st.session_state.premium:
+        job_limit = 10
+    else:
+        job_limit = 1
+    
+    if search_clicked:
+        with st.spinner("Searching for jobs matching your CV (worldwide)..."):
+            jobs = get_job_matches(cv_text, analysis, manual_query, country_display, country_code, location_refine, limit=job_limit)
+            if st.session_state.pro:
+                st.session_state.displayed_jobs_pro = jobs
+            elif st.session_state.premium:
+                st.session_state.displayed_jobs_premium = jobs
+            else:
+                st.session_state.displayed_jobs_free = jobs
+        if jobs:
+            st.success(f"✅ Found {len(jobs)} jobs")
+        else:
+            st.warning("No active jobs found. Try a different country or adjust the job title override.")
+    
+    display_jobs = []
+    if st.session_state.pro:
+        display_jobs = st.session_state.displayed_jobs_pro
+    elif st.session_state.premium:
+        display_jobs = st.session_state.displayed_jobs_premium
+    else:
+        display_jobs = st.session_state.displayed_jobs_free
+    
+    if display_jobs:
+        for idx, job in enumerate(display_jobs):
+            with st.expander(f"**{job['title']}** at {job['company']}"):
+                if job.get('closing_date'):
+                    st.warning(f"⚠️ **Closing date:** {job['closing_date']}")
+                elif job.get('created'):
+                    st.caption(f"📅 **Posted on:** {job['created']}")
+                else:
+                    st.caption(job.get('date_display', '📅 Date not specified'))
+                st.markdown(f"📍 **Location:** {job.get('location', 'Not specified')}")
+                description = job.get('description', '')
+                if description and len(description) > 20:
+                    preview = description[:300] + "..." if len(description) > 300 else description
+                    st.markdown(f"📝 **Description:** {preview}")
+                    if len(description) > 300:
+                        expand_key = f"exp_desc_{idx}"
+                        if expand_key not in st.session_state:
+                            st.session_state[expand_key] = False
+                        if st.button("📖 Read full description", key=f"desc_btn_{idx}"):
+                            st.session_state[expand_key] = not st.session_state[expand_key]
+                        if st.session_state[expand_key]:
+                            st.markdown(f"📝 **Full description:**\n\n{description}")
+                else:
+                    if (st.session_state.pro or st.session_state.premium) and (not description or len(description) < 20):
+                        with st.spinner("Fetching job details..."):
+                            ai_desc = generate_job_description(job['title'], job['company'])
+                            st.markdown(f"📝 **Description:** {ai_desc}")
+                    else:
+                        st.markdown("📝 *No description available.*")
+                if st.session_state.pro or st.session_state.premium:
+                    if st.button(f"🎯 Show Match Score", key=f"score_{idx}"):
+                        score, reason = score_job_match(cv_text, job['title'], description)
+                        st.write(f"**Match Score:** {score}%")
+                        st.caption(f"📝 {reason}")
+                else:
+                    st.caption("🔒 **Match score available after upgrade**")
+                st.markdown(f"[Apply Now]({job['url']})")
+        if not st.session_state.premium and not st.session_state.pro:
+            st.info("🔒 **Upgrade to Premium for more jobs, match scores & AI descriptions!**")
+        elif st.session_state.premium and not st.session_state.pro:
+            st.info("🚀 **Upgrade to Pro for CV generator, cover letter generator, and signature cleaner**")
+
+# ----- TAB 4: Upgrade -----
+with tab4:
+    st.markdown("""
+    <div class="upgrade-box">
+    <h3>🚀 Upgrade Your Career Toolkit</h3>
+    <p>Limited launch pricing • Lifetime access available</p>
+    </div>
+    """, unsafe_allow_html=True)
+    col_card1, col_card2 = st.columns(2)
+    with col_card1:
         st.markdown("""
-        <div class="upgrade-box">
-        <h3>🚀 Upgrade Your Career Toolkit</h3>
-        <p>Limited launch pricing • Lifetime access available</p>
+        <div class="pricing-card">
+        <span class="launch-badge">⭐ PREMIUM</span>
+        <h3>Premium</h3>
+        <div><span class="price">$7</span><span class="period">/month</span></div>
+        <div><span class="price">$29</span><span class="period"> lifetime</span></div>
+        <p style="font-size:13px; color:#666;">Recruiter verdict, missing keywords, rewrite suggestions, 10 job matches, full cover‑letter diagnostics, ATS checklist, PDF report</p>
         </div>
         """, unsafe_allow_html=True)
-        col_card1, col_card2 = st.columns(2)
-        with col_card1:
-            st.markdown("""
-            <div class="pricing-card">
-            <span class="launch-badge">⭐ PREMIUM</span>
-            <h3>Premium</h3>
-            <div><span class="price">$7</span><span class="period">/month</span></div>
-            <div><span class="price">$29</span><span class="period"> lifetime</span></div>
-            <p style="font-size:13px; color:#666;">Recruiter verdict, missing keywords, rewrite suggestions, 10 job matches, full cover‑letter diagnostics, ATS checklist, PDF report</p>
-            </div>
-            """, unsafe_allow_html=True)
-        with col_card2:
-            st.markdown("""
-            <div class="pricing-card">
-            <span class="launch-badge">🚀 PRO</span>
-            <h3>Pro</h3>
-            <div><span class="price">$15</span><span class="period">/month</span></div>
-            <div><span class="price">$49</span><span class="period"> lifetime</span></div>
-            <p style="font-size:13px; color:#666;">All Premium + CV draft generator, cover letter generator, signature cleaner, 25+ job matches, executive intelligence report</p>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        col_up1, col_up2, col_up3, col_up4 = st.columns(4)
-        with col_up1:
-            if st.button("Premium Monthly $7", use_container_width=True):
-                try:
-                    session = stripe.checkout.Session.create(
-                        payment_method_types=["card"],
-                        line_items=[{"price": STRIPE_PRICE_ID_PREMIUM_MONTHLY, "quantity": 1}],
-                        mode="subscription",
-                        success_url=APP_URL + "?success_premium_monthly=true",
-                        cancel_url=APP_URL,
-                    )
-                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
-                except Exception as e:
-                    st.error(f"Payment error: {e}")
-        with col_up2:
-            if st.button("Premium Lifetime $29", use_container_width=True):
-                try:
-                    session = stripe.checkout.Session.create(
-                        payment_method_types=["card"],
-                        line_items=[{"price": STRIPE_PRICE_ID_PREMIUM_LIFETIME, "quantity": 1}],
-                        mode="payment",
-                        success_url=APP_URL + "?success_premium_lifetime=true",
-                        cancel_url=APP_URL,
-                    )
-                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
-                except Exception as e:
-                    st.error(f"Payment error: {e}")
-        with col_up3:
-            if st.button("Pro Monthly $15", use_container_width=True):
-                try:
-                    session = stripe.checkout.Session.create(
-                        payment_method_types=["card"],
-                        line_items=[{"price": STRIPE_PRICE_ID_PRO_MONTHLY, "quantity": 1}],
-                        mode="subscription",
-                        success_url=APP_URL + "?success_pro_monthly=true",
-                        cancel_url=APP_URL,
-                    )
-                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
-                except Exception as e:
-                    st.error(f"Payment error: {e}")
-        with col_up4:
-            if st.button("Pro Lifetime $49", use_container_width=True):
-                try:
-                    session = stripe.checkout.Session.create(
-                        payment_method_types=["card"],
-                        line_items=[{"price": STRIPE_PRICE_ID_PRO_LIFETIME, "quantity": 1}],
-                        mode="payment",
-                        success_url=APP_URL + "?success_pro_lifetime=true",
-                        cancel_url=APP_URL,
-                    )
-                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
-                except Exception as e:
-                    st.error(f"Payment error: {e}")
-        st.markdown("---")
-        st.caption("📝 **Testing unlock codes:**")
-        col_code1, col_code2 = st.columns(2)
-        with col_code1:
-            if st.text_input("Premium code", type="password", key="premium_code") == PREMIUM_UNLOCK_CODE:
-                st.session_state.premium = True
-                st.rerun()
-        with col_code2:
-            if st.text_input("Pro code", type="password", key="pro_code") == PRO_UNLOCK_CODE:
-                st.session_state.pro = True
-                st.rerun()
+    with col_card2:
+        st.markdown("""
+        <div class="pricing-card">
+        <span class="launch-badge">🚀 PRO</span>
+        <h3>Pro</h3>
+        <div><span class="price">$15</span><span class="period">/month</span></div>
+        <div><span class="price">$49</span><span class="period"> lifetime</span></div>
+        <p style="font-size:13px; color:#666;">All Premium + CV draft generator, cover letter generator, signature cleaner, 25+ job matches, executive intelligence report</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    col_up1, col_up2, col_up3, col_up4 = st.columns(4)
+    with col_up1:
+        if st.button("Premium Monthly $7", use_container_width=True):
+            try:
+                session = stripe.checkout.Session.create(
+                    payment_method_types=["card"],
+                    line_items=[{"price": STRIPE_PRICE_ID_PREMIUM_MONTHLY, "quantity": 1}],
+                    mode="subscription",
+                    success_url=APP_URL + "?success_premium_monthly=true",
+                    cancel_url=APP_URL,
+                )
+                st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+            except Exception as e:
+                st.error(f"Payment error: {e}")
+    with col_up2:
+        if st.button("Premium Lifetime $29", use_container_width=True):
+            try:
+                session = stripe.checkout.Session.create(
+                    payment_method_types=["card"],
+                    line_items=[{"price": STRIPE_PRICE_ID_PREMIUM_LIFETIME, "quantity": 1}],
+                    mode="payment",
+                    success_url=APP_URL + "?success_premium_lifetime=true",
+                    cancel_url=APP_URL,
+                )
+                st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+            except Exception as e:
+                st.error(f"Payment error: {e}")
+    with col_up3:
+        if st.button("Pro Monthly $15", use_container_width=True):
+            try:
+                session = stripe.checkout.Session.create(
+                    payment_method_types=["card"],
+                    line_items=[{"price": STRIPE_PRICE_ID_PRO_MONTHLY, "quantity": 1}],
+                    mode="subscription",
+                    success_url=APP_URL + "?success_pro_monthly=true",
+                    cancel_url=APP_URL,
+                )
+                st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+            except Exception as e:
+                st.error(f"Payment error: {e}")
+    with col_up4:
+        if st.button("Pro Lifetime $49", use_container_width=True):
+            try:
+                session = stripe.checkout.Session.create(
+                    payment_method_types=["card"],
+                    line_items=[{"price": STRIPE_PRICE_ID_PRO_LIFETIME, "quantity": 1}],
+                    mode="payment",
+                    success_url=APP_URL + "?success_pro_lifetime=true",
+                    cancel_url=APP_URL,
+                )
+                st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+            except Exception as e:
+                st.error(f"Payment error: {e}")
+    st.markdown("---")
+    st.caption("📝 **Testing unlock codes:**")
+    col_code1, col_code2 = st.columns(2)
+    with col_code1:
+        if st.text_input("Premium code", type="password", key="premium_code") == PREMIUM_UNLOCK_CODE:
+            st.session_state.premium = True
+            st.rerun()
+    with col_code2:
+        if st.text_input("Pro code", type="password", key="pro_code") == PRO_UNLOCK_CODE:
+            st.session_state.pro = True
+            st.rerun()
 
-else:
-    st.info("👆 Please upload your CV to begin.")
+# ----- TAB 5: Reports -----
+with tab5:
+    if st.session_state.premium or st.session_state.pro:
+        with st.spinner("Generating full analysis for report..."):
+            full_analysis = analyze_cv_cached(cv_text, full=True)
+        pdf_data = generate_pdf_report(full_analysis)
+        st.download_button("📥 Download Executive PDF Report", pdf_data, file_name="executive_report.pdf")
+        checklist_text = generate_ats_checklist(full_analysis)
+        st.download_button("📋 Download ATS Optimization Checklist", checklist_text, file_name="ats_checklist.txt")
+    else:
+        st.info("🔒 **PDF report and ATS checklist are available after upgrading to Premium or Pro.**")
 
 # ---------------------------
 # Footer
