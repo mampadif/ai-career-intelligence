@@ -351,7 +351,9 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
                     "created": created,
                     "is_expired": is_expired
                 })
-            return deduplicate_jobs(formatted)[:limit]
+            # Filter out expired jobs
+            active_jobs = [job for job in formatted if not job.get("is_expired")]
+            return deduplicate_jobs(active_jobs)[:limit]
         else:
             return []
     except Exception as e:
@@ -416,7 +418,7 @@ def get_job_matches(cv_text, analysis, manual_query, country_name, country_code,
     if country_code in adzuna_supported:
         jobs = get_jobs_from_adzuna(query, country_code, location_refine, limit)
         if not jobs:
-            st.warning(f"No {query} jobs found via Adzuna. Trying expanded search...")
+            st.warning(f"No active {query} jobs found via Adzuna. Trying expanded search...")
             search_location = f"{location_refine}, {country_name}" if location_refine else country_name
             jobs = get_jobs_from_gemini_search(cv_text, query, search_location, limit)
         return jobs
@@ -757,7 +759,7 @@ if uploaded_file:
         if jobs:
             st.success(f"✅ Found {len(jobs)} jobs")
         else:
-            st.warning("No jobs found. Try a different country or adjust the job title override.")
+            st.warning("No active jobs found. Try a different country or adjust the job title override.")
 
     display_jobs = []
     if st.session_state.pro:
@@ -770,33 +772,40 @@ if uploaded_file:
     if display_jobs:
         for idx, job in enumerate(display_jobs):
             with st.expander(f"**{job['title']}** at {job['company']}"):
-                # Date information
-                st.caption(job.get('date_display', '📅 Date not specified'))
-                
-                st.markdown(f"📍 **Location:** {job.get('location', 'Not specified')}")
-                
-                # ----- Description with expand/collapse for premium users -----
-                description = job.get('description', '')
-                if description and len(description) > 20:
-                    preview = description[:300] + "..." if len(description) > 300 else description
-                    st.markdown(f"📝 **Description:** {preview}")
-                    if len(description) > 300:
-                        if st.button("📖 Read full description", key=f"desc_full_{idx}"):
-                            st.markdown(f"📝 **Full description:**\n\n{description}")
-                else:
-                    # For paid users, generate description with Gemini
-                    if st.session_state.pro or st.session_state.premium:
-                        with st.spinner("Fetching job details..."):
-                            ai_desc = generate_job_description(job['title'], job['company'])
-                            st.markdown(f"📝 **Description:** {ai_desc}")
-                    else:
-                        st.markdown("📝 *Upgrade to Pro/Premium to see AI‑generated job descriptions.*")
-                
-                # ----- Closing date (if available) -----
+                # Date information – always show if available
                 if job.get('closing_date'):
                     st.warning(f"⚠️ **Closing date:** {job['closing_date']}")
                 elif job.get('created'):
                     st.caption(f"📅 **Posted on:** {job['created']}")
+                else:
+                    st.caption(job.get('date_display', '📅 Date not specified'))
+                
+                st.markdown(f"📍 **Location:** {job.get('location', 'Not specified')}")
+                
+                # ----- Description with expand/collapse -----
+                description = job.get('description', '')
+                if description and len(description) > 20:
+                    # Show preview first
+                    preview = description[:300] + "..." if len(description) > 300 else description
+                    st.markdown(f"📝 **Description:** {preview}")
+                    # If longer than 300 chars, provide a button to expand
+                    if len(description) > 300:
+                        # Use session state to remember expansion per job
+                        expand_key = f"exp_desc_{idx}"
+                        if expand_key not in st.session_state:
+                            st.session_state[expand_key] = False
+                        if st.button("📖 Read full description", key=f"desc_btn_{idx}"):
+                            st.session_state[expand_key] = not st.session_state[expand_key]
+                        if st.session_state[expand_key]:
+                            st.markdown(f"📝 **Full description:**\n\n{description}")
+                else:
+                    # For paid users, generate description with Gemini if missing
+                    if (st.session_state.pro or st.session_state.premium) and (not description or len(description) < 20):
+                        with st.spinner("Fetching job details..."):
+                            ai_desc = generate_job_description(job['title'], job['company'])
+                            st.markdown(f"📝 **Description:** {ai_desc}")
+                    else:
+                        st.markdown("📝 *No description available.*")
                 
                 # ----- Match score button (Gemini AI) -----
                 if st.session_state.pro or st.session_state.premium:
