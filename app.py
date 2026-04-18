@@ -172,7 +172,7 @@ if "success_pro_lifetime" in st.query_params:
     st.query_params.clear()
 
 # ---------------------------
-# 4. Helper Functions (full set)
+# 4. Helper Functions
 # ---------------------------
 def extract_text_from_file(uploaded_file):
     if uploaded_file.name.endswith(".pdf"):
@@ -325,25 +325,33 @@ def parse_adzuna_date(date_str):
     except:
         return None
 
-def filter_recent_jobs(jobs, days=30):
-    cutoff = datetime.now() - timedelta(days=days)
-    recent = []
+def filter_active_jobs(jobs):
+    """Keep jobs that are still open: either closing_date in future, or if missing, posted within last 30 days."""
+    today = datetime.now().date()
+    cutoff_date = datetime.now() - timedelta(days=30)
+    active = []
     for job in jobs:
-        job_date = None
-        if job.get('created'):
-            job_date = parse_adzuna_date(job['created'])
-        elif job.get('date_display'):
-            # try to extract date from Gemini's text
-            match = re.search(r'(\d{4}-\d{2}-\d{2})', job['date_display'])
-            if match:
-                job_date = parse_adzuna_date(match.group(1))
-        if job_date and job_date >= cutoff:
-            recent.append(job)
-        elif not job_date:
-            # keep jobs without date (assume recent)
-            recent.append(job)
-    recent.sort(key=lambda x: parse_adzuna_date(x.get('created')) or datetime.min, reverse=True)
-    return recent
+        keep = False
+        # If closing_date exists, check if it's in the future
+        if job.get('closing_date'):
+            close_date = parse_adzuna_date(job['closing_date'])
+            if close_date and close_date.date() >= today:
+                keep = True
+        else:
+            # No closing date: rely on posted date (last 30 days)
+            posted = job.get('created')
+            if posted:
+                posted_date = parse_adzuna_date(posted)
+                if posted_date and posted_date >= cutoff_date:
+                    keep = True
+            else:
+                # No date info at all – assume active (better safe)
+                keep = True
+        if keep:
+            active.append(job)
+    # Sort by closing date (future first) or posted date (newest first)
+    active.sort(key=lambda x: parse_adzuna_date(x.get('closing_date')) or parse_adzuna_date(x.get('created')) or datetime.min, reverse=True)
+    return active
 
 def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
     url = f"https://api.adzuna.com/v1/api/jobs/{country_code}/search/1"
@@ -366,15 +374,8 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
                 created = j.get("created")
                 closing_date = j.get("closing_date")
                 date_display = "📅 Date not specified"
-                is_expired = False
                 if closing_date:
                     date_display = f"📅 Closing: {closing_date}"
-                    try:
-                        if datetime.strptime(closing_date, "%Y-%m-%d") < datetime.now():
-                            is_expired = True
-                            date_display = "⚠️ EXPIRED"
-                    except:
-                        pass
                 elif created:
                     date_display = f"📅 Posted: {created}"
                 formatted.append({
@@ -386,11 +387,11 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
                     "date_display": date_display,
                     "closing_date": closing_date,
                     "created": created,
-                    "is_expired": is_expired
+                    "is_expired": False
                 })
-            active_jobs = [job for job in formatted if not job.get("is_expired")]
-            recent_jobs = filter_recent_jobs(active_jobs, days=30)
-            return deduplicate_jobs(recent_jobs)[:limit]
+            # Filter active jobs (closing date in future or recent)
+            active_jobs = filter_active_jobs(formatted)
+            return deduplicate_jobs(active_jobs)[:limit]
         else:
             return []
     except Exception as e:
@@ -454,7 +455,7 @@ def get_job_matches(cv_text, analysis, manual_query, country_name, country_code,
     if country_code in adzuna_supported:
         jobs = get_jobs_from_adzuna(query, country_code, location_refine, limit)
         if not jobs:
-            st.warning(f"No recent {query} jobs found via Adzuna. Trying expanded search...")
+            st.warning(f"No active {query} jobs found via Adzuna. Trying expanded search...")
             search_location = f"{location_refine}, {country_name}" if location_refine else country_name
             jobs = get_jobs_from_gemini_search(cv_text, query, search_location, limit)
         return jobs
@@ -668,7 +669,7 @@ with col4:
 st.markdown("---")
 col_left, col_mid, col_right = st.columns(3)
 
-# Left: Improve CV
+# Left: Improve CV (unchanged)
 with col_left:
     with st.container():
         st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -700,7 +701,7 @@ with col_left:
                 st.info("🚀 Upgrade to Pro for CV draft generator")
         st.markdown('</div>', unsafe_allow_html=True)
 
-# Middle: Find Jobs
+# Middle: Find Jobs (with improved closing-date filtering)
 with col_mid:
     with st.container():
         st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -715,36 +716,46 @@ with col_mid:
         manual_query = st.text_input("Override job title (optional)", placeholder=f"Leave empty to use {st.session_state.primary_role}", key="manual_query_input")
         search_clicked = st.button("🔍 Search for Jobs", use_container_width=True, type="primary")
 
+        # Define job_limit based on tier
+        if st.session_state.pro:
+            job_limit = 25
+        elif st.session_state.premium:
+            job_limit = 10
+        else:
+            job_limit = 1
+
         if search_clicked:
             with st.spinner("Searching for jobs..."):
-                if st.session_state.pro:
-                    job_limit = 25
-                elif st.session_state.premium:
-                    job_limit = 10
-                else:
-                    job_limit = 1
                 jobs = get_job_matches(st.session_state.cv_text, st.session_state.analysis, manual_query, country_display, country_code, location_refine, limit=job_limit)
                 st.session_state.jobs = jobs
                 st.session_state.match_scores = {}
 
         if st.session_state.jobs:
-            # Filter and sort jobs (strictly last 30 days)
+            # Filter active jobs (closing date in future or recent) – already done inside get_jobs_from_adzuna, but double-check
+            # Also ensure we only show jobs with closing_date > today
+            today = datetime.now().date()
             cutoff_date = datetime.now() - timedelta(days=30)
-            recent_jobs = []
+            active_jobs = []
             for job in st.session_state.jobs:
-                job_date = None
-                if job.get('created'):
-                    job_date = parse_adzuna_date(job['created'])
-                elif job.get('date_display'):
-                    date_match = re.search(r'(\d{4}-\d{2}-\d{2})', job['date_display'])
-                    if date_match:
-                        job_date = parse_adzuna_date(date_match.group(1))
-                if job_date and job_date >= cutoff_date:
-                    recent_jobs.append(job)
-                elif not job_date:
-                    recent_jobs.append(job)  # assume recent if no date
-            recent_jobs.sort(key=lambda x: parse_adzuna_date(x.get('created')) or datetime.min, reverse=True)
-            st.session_state.jobs = recent_jobs[:job_limit]
+                keep = False
+                if job.get('closing_date'):
+                    close_date = parse_adzuna_date(job['closing_date'])
+                    if close_date and close_date.date() >= today:
+                        keep = True
+                else:
+                    # No closing date: rely on posted date (last 30 days)
+                    posted = job.get('created')
+                    if posted:
+                        posted_date = parse_adzuna_date(posted)
+                        if posted_date and posted_date >= cutoff_date:
+                            keep = True
+                    else:
+                        keep = True
+                if keep:
+                    active_jobs.append(job)
+            # Sort by closing date (future first) or posted date (newest first)
+            active_jobs.sort(key=lambda x: parse_adzuna_date(x.get('closing_date')) or parse_adzuna_date(x.get('created')) or datetime.min, reverse=True)
+            st.session_state.jobs = active_jobs[:job_limit]
 
             for idx, job in enumerate(st.session_state.jobs):
                 # Strip HTML from description
@@ -815,7 +826,7 @@ with col_mid:
                 st.markdown("---")
         st.markdown('</div>', unsafe_allow_html=True)
 
-# Right: Saved Jobs
+# Right: Saved Jobs (unchanged)
 with col_right:
     with st.container():
         st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -837,7 +848,7 @@ with col_right:
         st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------------------
-# Upgrade & Reports
+# Upgrade & Reports (unchanged)
 # ---------------------------
 st.markdown("---")
 st.subheader("🚀 Upgrade Your Career Toolkit")
