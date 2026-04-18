@@ -34,7 +34,6 @@ genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-2.5-flash")
 stripe.api_key = STRIPE_SECRET_KEY
 
-# Country mapping
 COUNTRY_MAP = {
     "United States": "us",
     "United Kingdom": "gb",
@@ -52,7 +51,7 @@ COUNTRY_MAP = {
 }
 
 # ---------------------------
-# 2. Premium CSS
+# 2. Custom CSS (unchanged)
 # ---------------------------
 st.markdown("""
 <style>
@@ -159,7 +158,6 @@ if "generated_cv" not in st.session_state:
 if "cover_letter_for_job" not in st.session_state:
     st.session_state.cover_letter_for_job = None
 
-# Stripe callbacks
 if "success_premium_monthly" in st.query_params:
     st.session_state.premium = True
     st.query_params.clear()
@@ -174,7 +172,7 @@ if "success_pro_lifetime" in st.query_params:
     st.query_params.clear()
 
 # ---------------------------
-# 4. Helper Functions (complete)
+# 4. Helper Functions (full set)
 # ---------------------------
 def extract_text_from_file(uploaded_file):
     if uploaded_file.name.endswith(".pdf"):
@@ -334,9 +332,15 @@ def filter_recent_jobs(jobs, days=30):
         job_date = None
         if job.get('created'):
             job_date = parse_adzuna_date(job['created'])
+        elif job.get('date_display'):
+            # try to extract date from Gemini's text
+            match = re.search(r'(\d{4}-\d{2}-\d{2})', job['date_display'])
+            if match:
+                job_date = parse_adzuna_date(match.group(1))
         if job_date and job_date >= cutoff:
             recent.append(job)
         elif not job_date:
+            # keep jobs without date (assume recent)
             recent.append(job)
     recent.sort(key=lambda x: parse_adzuna_date(x.get('created')) or datetime.min, reverse=True)
     return recent
@@ -595,7 +599,6 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Tier badge
 if st.session_state.pro:
     st.markdown('<div style="text-align:right;"><span class="tier-badge-pro">🚀 PRO</span></div>', unsafe_allow_html=True)
 elif st.session_state.premium:
@@ -618,7 +621,6 @@ with st.spinner("Analysing your CV with AI..."):
     st.session_state.target_roles = analysis.get('target_roles', [])
     st.session_state.primary_role = st.session_state.target_roles[0] if st.session_state.target_roles and st.session_state.target_roles[0] != "N/A" else "your target role"
 
-# Interpretation
 strength = analysis['strength_score']
 if strength >= 70:
     interpretation = "✅ Your CV is competitive. Minor improvements could increase interview chances significantly."
@@ -628,7 +630,6 @@ else:
     interpretation = "⚠️ Your CV needs structural improvement. The suggestions below will help you stand out."
 st.info(interpretation)
 
-# Metrics row
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.markdown(f"""
@@ -662,7 +663,7 @@ with col4:
     """, unsafe_allow_html=True)
 
 # ---------------------------
-# Action Cards (Improve CV, Find Jobs, Saved Jobs)
+# Action Cards
 # ---------------------------
 st.markdown("---")
 col_left, col_mid, col_right = st.columns(3)
@@ -727,7 +728,29 @@ with col_mid:
                 st.session_state.match_scores = {}
 
         if st.session_state.jobs:
+            # Filter and sort jobs (strictly last 30 days)
+            cutoff_date = datetime.now() - timedelta(days=30)
+            recent_jobs = []
+            for job in st.session_state.jobs:
+                job_date = None
+                if job.get('created'):
+                    job_date = parse_adzuna_date(job['created'])
+                elif job.get('date_display'):
+                    date_match = re.search(r'(\d{4}-\d{2}-\d{2})', job['date_display'])
+                    if date_match:
+                        job_date = parse_adzuna_date(date_match.group(1))
+                if job_date and job_date >= cutoff_date:
+                    recent_jobs.append(job)
+                elif not job_date:
+                    recent_jobs.append(job)  # assume recent if no date
+            recent_jobs.sort(key=lambda x: parse_adzuna_date(x.get('created')) or datetime.min, reverse=True)
+            st.session_state.jobs = recent_jobs[:job_limit]
+
             for idx, job in enumerate(st.session_state.jobs):
+                # Strip HTML from description
+                raw_desc = job.get('description', '')
+                clean_desc = re.sub(r'<[^>]+>', '', raw_desc)
+                clean_desc = re.sub(r'\s+', ' ', clean_desc).strip()
                 st.markdown(f"""
                 <div class="job-card">
                     <div class="job-title">{job['title']}</div>
@@ -737,14 +760,15 @@ with col_mid:
                         <span>{job.get('date_display', '📅 Date not specified')}</span>
                         {f"<span>⚠️ Closing: {job['closing_date']}</span>" if job.get('closing_date') else ""}
                     </div>
+                    <div class="job-description">{clean_desc[:200]}...</div>
                 </div>
                 """, unsafe_allow_html=True)
 
-                # Match score with explanation
+                # Match score
                 score_key = f"score_{idx}"
                 if st.session_state.premium or st.session_state.pro:
                     if st.button(f"🎯 Show Match Score", key=f"match_btn_{idx}"):
-                        score, reason = score_job_match(st.session_state.cv_text, job['title'], job.get('description', ''))
+                        score, reason = score_job_match(st.session_state.cv_text, job['title'], raw_desc)
                         st.session_state.match_scores[score_key] = (score, reason)
                     if score_key in st.session_state.match_scores:
                         score, reason = st.session_state.match_scores[score_key]
@@ -753,7 +777,7 @@ with col_mid:
                 else:
                     st.caption("🔒 Match score available after upgrade")
 
-                # Job-specific cover letter button
+                # Job-specific cover letter
                 if st.button(f"✉️ Generate Cover Letter for this job", key=f"cover_btn_{idx}"):
                     with st.spinner("Generating tailored cover letter..."):
                         if st.session_state.premium or st.session_state.pro:
@@ -774,7 +798,7 @@ with col_mid:
                     docx_file = create_docx_from_text(st.session_state.cover_letter_for_job, "Cover Letter")
                     st.download_button("📥 Download Cover Letter", docx_file, file_name="cover_letter.docx")
 
-                # Save job button
+                # Save job
                 if st.button(f"💾 Save this job", key=f"save_{idx}"):
                     if not any(saved.get('url') == job['url'] for saved in st.session_state.saved_jobs):
                         st.session_state.saved_jobs.append({
@@ -813,7 +837,7 @@ with col_right:
         st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------------------
-# Upgrade & Reports Section
+# Upgrade & Reports
 # ---------------------------
 st.markdown("---")
 st.subheader("🚀 Upgrade Your Career Toolkit")
@@ -947,9 +971,6 @@ if st.session_state.pro:
             except Exception as e:
                 st.error(f"Error: {e}")
 
-# ---------------------------
-# Footer
-# ---------------------------
 st.markdown("""
 <div class="footer">
 <b>AI Career Intelligence</b> • Powered by Gemini AI • Worldwide job search support
