@@ -27,8 +27,8 @@ STRIPE_PRICE_ID_PRO_LIFETIME = st.secrets["STRIPE_PRICE_ID_PRO_LIFETIME"]
 JOB_API_KEY = st.secrets["JOB_API_KEY"]
 ADZUNA_APP_ID = st.secrets["ADZUNA_APP_ID"]
 APP_URL = st.secrets["APP_URL"]
-PREMIUM_UNLOCK_CODE = st.secrets["PREMIUM_UNLOCK_CODE"]
-PRO_UNLOCK_CODE = st.secrets["PRO_UNLOCK_CODE"]
+PREMIUM_UNLOCK_CODE = st.secrets["PREMIUM_UNLOCK_CODE"].strip()
+PRO_UNLOCK_CODE = st.secrets["PRO_UNLOCK_CODE"].strip()
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-2.5-flash")
@@ -52,7 +52,7 @@ COUNTRY_MAP = {
 }
 
 # ---------------------------
-# 2. Custom CSS (clean, minimal)
+# 2. Custom CSS
 # ---------------------------
 st.markdown("""
 <style>
@@ -152,7 +152,7 @@ if "success_pro_lifetime" in st.query_params:
     st.query_params.clear()
 
 # ---------------------------
-# 4. Helper Functions (all your existing logic)
+# 4. Helper Functions (full set)
 # ---------------------------
 def extract_text_from_file(uploaded_file):
     if uploaded_file.name.endswith(".pdf"):
@@ -558,7 +558,6 @@ if not uploaded_file:
     st.info("👆 Please upload your CV to begin.")
     st.stop()
 
-# Process CV
 cv_text = extract_text_from_file(uploaded_file)
 st.session_state.cv_text = cv_text
 
@@ -926,18 +925,29 @@ with col_up4:
             st.error(f"Payment error: {e}")
 
 st.markdown("---")
-st.caption("📝 **Testing unlock codes:**")
+st.subheader("🔓 Unlock with a code (testing or manual entry)")
+
 col_code1, col_code2 = st.columns(2)
 with col_code1:
-    if st.text_input("Premium code", type="password", key="premium_code") == PREMIUM_UNLOCK_CODE:
-        st.session_state.premium = True
-        st.rerun()
+    premium_input = st.text_input("Premium unlock code", type="password", key="premium_code_input")
+    if st.button("Apply Premium Code", key="apply_premium"):
+        if premium_input.strip() == PREMIUM_UNLOCK_CODE:
+            st.session_state.premium = True
+            st.success("✅ Premium unlocked! Refreshing...")
+            st.rerun()
+        else:
+            st.error("❌ Invalid Premium code. Please check and try again.")
 with col_code2:
-    if st.text_input("Pro code", type="password", key="pro_code") == PRO_UNLOCK_CODE:
-        st.session_state.pro = True
-        st.rerun()
+    pro_input = st.text_input("Pro unlock code", type="password", key="pro_code_input")
+    if st.button("Apply Pro Code", key="apply_pro"):
+        if pro_input.strip() == PRO_UNLOCK_CODE:
+            st.session_state.pro = True
+            st.success("✅ Pro unlocked! Refreshing...")
+            st.rerun()
+        else:
+            st.error("❌ Invalid Pro code. Please check and try again.")
 
-# Reports section (always visible, but downloads gated)
+# Reports section
 st.subheader("📄 Reports")
 if st.session_state.premium or st.session_state.pro:
     with st.spinner("Generating full analysis for report..."):
