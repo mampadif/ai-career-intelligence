@@ -10,6 +10,8 @@ from datetime import datetime
 from fpdf import FPDF
 from io import BytesIO
 from docx import Document
+from PIL import Image
+import numpy as np
 
 # ---------------------------
 # 1. Configuration & Secrets
@@ -159,7 +161,7 @@ if "success_pro_lifetime" in st.query_params:
     st.query_params.clear()
 
 # ---------------------------
-# 4. Helper Functions
+# 4. Helper Functions (existing + signature cleaner)
 # ---------------------------
 def extract_text_from_file(uploaded_file):
     if uploaded_file.name.endswith(".pdf"):
@@ -387,34 +389,24 @@ def get_jobs_from_gemini_search(cv_text, job_title, location, limit=5):
         return []
 
 def get_job_matches(cv_text, analysis, manual_query, country_name, country_code, location_refine, limit=5):
-    """CV-FIRST: Always prioritize detected roles from CV analysis"""
-    # PRIORITY 1: CV-detected roles from Gemini
     target_roles = analysis.get("target_roles", [])
-    
     if target_roles and target_roles[0] != "N/A":
         query = target_roles[0]
         source = "CV analysis"
     else:
         query = generate_job_query(cv_text).strip()
         source = "CV text extraction"
-    
-    # Manual override (optional, with warning)
     if manual_query and len(manual_query.strip()) > 2:
         st.warning(f"⚠️ Overriding CV-detected role '{query}' with '{manual_query}'. This may return less relevant jobs.")
         query = manual_query.strip()
         source = "manual override"
-    
     if "," in query:
         query = query.split(",")[0].strip()
-    
     if not query or len(query) < 3:
         st.error("Could not determine a valid job title from your CV.")
         return []
-    
     st.success(f"🎯 Searching for: **{query}** (from {source}) in {country_name if country_name != 'Other' else country_code.upper()}")
-    
     adzuna_supported = ["us", "gb", "ca", "au", "de", "fr", "in", "za"]
-    
     if country_code in adzuna_supported:
         jobs = get_jobs_from_adzuna(query, country_code, location_refine, limit)
         if not jobs:
@@ -507,6 +499,25 @@ def generate_ats_checklist(analysis_full):
     checklist += "Missing Keywords to Add:\n" + "\n".join(f"  • {kw}" for kw in analysis_full.get('missing_keywords', [])) + "\n\n"
     checklist += "Rewrite Suggestions:\n" + "\n".join(f"  • {sug}" for sug in analysis_full.get('rewrite_suggestions', [])) + "\n\n"
     return checklist
+
+def remove_background_and_make_transparent(image_bytes):
+    img = Image.open(BytesIO(image_bytes)).convert("RGBA")
+    data = np.array(img)
+    if data.shape[2] == 3:
+        alpha = np.ones((data.shape[0], data.shape[1]), dtype=np.uint8) * 255
+        white_mask = (data[:, :, 0] > 200) & (data[:, :, 1] > 200) & (data[:, :, 2] > 200)
+        alpha[white_mask] = 0
+        data = np.dstack((data, alpha))
+    else:
+        alpha = data[:, :, 3]
+        white_mask = (data[:, :, 0] > 200) & (data[:, :, 1] > 200) & (data[:, :, 2] > 200)
+        alpha[white_mask] = 0
+        data[:, :, 3] = alpha
+    result_img = Image.fromarray(data, "RGBA")
+    output = BytesIO()
+    result_img.save(output, format="PNG")
+    output.seek(0)
+    return output
 
 # ---------------------------
 # 5. UI - Hero Section
@@ -797,7 +808,9 @@ if uploaded_file:
             checklist_text = generate_ats_checklist(full_analysis)
             st.download_button("📋 ATS Checklist", checklist_text, file_name="ats_checklist.txt")
         st.markdown("---")
-        st.subheader("🧾 CV Draft Generator")
+        
+        # CV Draft Generator
+        st.subheader("🧾 Recruiter-Optimized CV Draft")
         if st.button("📄 Generate Improved CV Draft", use_container_width=True):
             with st.spinner("Generating..."):
                 st.session_state.generated_cv = generate_improved_cv(cv_text, primary_role)
@@ -805,6 +818,27 @@ if uploaded_file:
             st.text_area("Improved CV Draft", st.session_state.generated_cv, height=250)
             docx_file = create_docx_from_text(st.session_state.generated_cv, "Improved CV")
             st.download_button("📥 Download CV", docx_file, file_name="improved_cv.docx")
+        
+        st.markdown("---")
+        
+        # Signature Cleaner
+        st.subheader("✍️ Signature Cleaner (Transparent PNG)")
+        st.caption("Upload a photo of your handwritten signature – we'll remove the background and give you a transparent PNG for digital documents.")
+        uploaded_signature = st.file_uploader("Upload signature image (JPG, PNG, or JPEG)", type=["jpg", "jpeg", "png"], key="signature_upload")
+        if uploaded_signature:
+            with st.spinner("Cleaning signature..."):
+                try:
+                    transparent_png = remove_background_and_make_transparent(uploaded_signature.read())
+                    st.success("✅ Signature cleaned!")
+                    st.image(transparent_png, caption="Cleaned Signature (Transparent Background)", width=200)
+                    st.download_button(
+                        label="📥 Download Transparent PNG",
+                        data=transparent_png,
+                        file_name="signature_clean.png",
+                        mime="image/png"
+                    )
+                except Exception as e:
+                    st.error(f"Error processing image: {e}")
 
     # ---------------------------
     # Upgrade Section
@@ -823,8 +857,9 @@ if uploaded_file:
             <div class="pricing-card">
             <span class="launch-badge">⭐ PREMIUM</span>
             <h3>Premium</h3>
-            <div><span class="price">$9</span><span class="period">/month</span></div>
+            <div><span class="price">$7</span><span class="period">/month</span></div>
             <div><span class="price">$29</span><span class="period"> lifetime</span></div>
+            <p style="font-size:13px; color:#666;">Recruiter verdict, missing keywords, rewrite suggestions, 10 job matches, full cover‑letter diagnostics, ATS checklist, PDF report</p>
             </div>
             """, unsafe_allow_html=True)
         with col_card2:
@@ -832,14 +867,15 @@ if uploaded_file:
             <div class="pricing-card">
             <span class="launch-badge">🚀 PRO</span>
             <h3>Pro</h3>
-            <div><span class="price">$19</span><span class="period">/month</span></div>
+            <div><span class="price">$15</span><span class="period">/month</span></div>
             <div><span class="price">$49</span><span class="period"> lifetime</span></div>
+            <p style="font-size:13px; color:#666;">All Premium + CV draft generator, cover letter generator, signature cleaner, 25+ job matches, executive intelligence report</p>
             </div>
             """, unsafe_allow_html=True)
         
         col_up1, col_up2, col_up3, col_up4 = st.columns(4)
         with col_up1:
-            if st.button("Premium Monthly $9", use_container_width=True):
+            if st.button("Premium Monthly $7", use_container_width=True):
                 try:
                     session = stripe.checkout.Session.create(
                         payment_method_types=["card"],
@@ -848,9 +884,9 @@ if uploaded_file:
                         success_url=APP_URL + "?success_premium_monthly=true",
                         cancel_url=APP_URL,
                     )
-                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay</a>", unsafe_allow_html=True)
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Payment error: {e}")
         with col_up2:
             if st.button("Premium Lifetime $29", use_container_width=True):
                 try:
@@ -861,11 +897,11 @@ if uploaded_file:
                         success_url=APP_URL + "?success_premium_lifetime=true",
                         cancel_url=APP_URL,
                     )
-                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay</a>", unsafe_allow_html=True)
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Payment error: {e}")
         with col_up3:
-            if st.button("Pro Monthly $19", use_container_width=True):
+            if st.button("Pro Monthly $15", use_container_width=True):
                 try:
                     session = stripe.checkout.Session.create(
                         payment_method_types=["card"],
@@ -874,9 +910,9 @@ if uploaded_file:
                         success_url=APP_URL + "?success_pro_monthly=true",
                         cancel_url=APP_URL,
                     )
-                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay</a>", unsafe_allow_html=True)
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Payment error: {e}")
         with col_up4:
             if st.button("Pro Lifetime $49", use_container_width=True):
                 try:
@@ -887,9 +923,9 @@ if uploaded_file:
                         success_url=APP_URL + "?success_pro_lifetime=true",
                         cancel_url=APP_URL,
                     )
-                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay</a>", unsafe_allow_html=True)
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Payment error: {e}")
         st.markdown("---")
         st.caption("📝 **Testing unlock codes:**")
         col_code1, col_code2 = st.columns(2)
