@@ -108,17 +108,6 @@ body { background-color: #f8fafc; font-family: 'Inter', sans-serif; }
     transform: translateY(-1px);
     box-shadow: 0 4px 12px rgba(108,99,255,0.3);
 }
-.pricing-card {
-    background: white;
-    border-radius: 20px;
-    padding: 1.5rem;
-    text-align: center;
-    height: 100%;
-    border: 1px solid #e2e8f0;
-}
-.pricing-title { font-size: 1.5rem; font-weight: 700; }
-.pricing-price { font-size: 2rem; font-weight: 800; color: #4A90E2; margin: 1rem 0; }
-.pricing-badge { background-color: #6C63FF; color: white; padding: 0.2rem 1rem; border-radius: 30px; font-size: 0.7rem; display: inline-block; margin-bottom: 1rem; }
 .footer { text-align: center; margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid #e2e8f0; color: #64748b; font-size: 0.8rem; }
 .tier-badge-free, .tier-badge-premium, .tier-badge-pro {
     padding: 4px 12px;
@@ -325,34 +314,6 @@ def parse_adzuna_date(date_str):
     except:
         return None
 
-def filter_active_jobs(jobs):
-    """Keep jobs that are still open: either closing_date in future, or if missing, posted within last 30 days."""
-    today = datetime.now().date()
-    cutoff_date = datetime.now() - timedelta(days=30)
-    active = []
-    for job in jobs:
-        keep = False
-        # If closing_date exists, check if it's in the future
-        if job.get('closing_date'):
-            close_date = parse_adzuna_date(job['closing_date'])
-            if close_date and close_date.date() >= today:
-                keep = True
-        else:
-            # No closing date: rely on posted date (last 30 days)
-            posted = job.get('created')
-            if posted:
-                posted_date = parse_adzuna_date(posted)
-                if posted_date and posted_date >= cutoff_date:
-                    keep = True
-            else:
-                # No date info at all – assume active (better safe)
-                keep = True
-        if keep:
-            active.append(job)
-    # Sort by closing date (future first) or posted date (newest first)
-    active.sort(key=lambda x: parse_adzuna_date(x.get('closing_date')) or parse_adzuna_date(x.get('created')) or datetime.min, reverse=True)
-    return active
-
 def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
     url = f"https://api.adzuna.com/v1/api/jobs/{country_code}/search/1"
     params = {
@@ -389,9 +350,17 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
                     "created": created,
                     "is_expired": False
                 })
-            # Filter active jobs (closing date in future or recent)
-            active_jobs = filter_active_jobs(formatted)
-            return deduplicate_jobs(active_jobs)[:limit]
+            # Filter out jobs with closing_date in the past
+            today = datetime.now().date()
+            active = []
+            for job in formatted:
+                if job.get('closing_date'):
+                    close_date = parse_adzuna_date(job['closing_date'])
+                    if close_date and close_date.date() >= today:
+                        active.append(job)
+                else:
+                    active.append(job)
+            return deduplicate_jobs(active)[:limit]
         else:
             return []
     except Exception as e:
@@ -669,7 +638,7 @@ with col4:
 st.markdown("---")
 col_left, col_mid, col_right = st.columns(3)
 
-# Left: Improve CV (unchanged)
+# Left: Improve CV
 with col_left:
     with st.container():
         st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -701,7 +670,7 @@ with col_left:
                 st.info("🚀 Upgrade to Pro for CV draft generator")
         st.markdown('</div>', unsafe_allow_html=True)
 
-# Middle: Find Jobs (with improved closing-date filtering)
+# Middle: Find Jobs (robust, only filters expired closing dates)
 with col_mid:
     with st.container():
         st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -726,36 +695,28 @@ with col_mid:
 
         if search_clicked:
             with st.spinner("Searching for jobs..."):
-                jobs = get_job_matches(st.session_state.cv_text, st.session_state.analysis, manual_query, country_display, country_code, location_refine, limit=job_limit)
-                st.session_state.jobs = jobs
-                st.session_state.match_scores = {}
+                try:
+                    jobs = get_job_matches(st.session_state.cv_text, st.session_state.analysis, manual_query, country_display, country_code, location_refine, limit=job_limit)
+                    st.session_state.jobs = jobs
+                    st.session_state.match_scores = {}
+                    if not jobs:
+                        st.warning("No jobs found. Try a different country or job title.")
+                except Exception as e:
+                    st.error(f"Job search failed: {e}")
+                    st.session_state.jobs = []
 
         if st.session_state.jobs:
-            # Filter active jobs (closing date in future or recent) – already done inside get_jobs_from_adzuna, but double-check
-            # Also ensure we only show jobs with closing_date > today
+            # Additional safety: remove any job with closing_date in the past (though get_jobs_from_adzuna already does it)
             today = datetime.now().date()
-            cutoff_date = datetime.now() - timedelta(days=30)
-            active_jobs = []
+            filtered = []
             for job in st.session_state.jobs:
-                keep = False
                 if job.get('closing_date'):
                     close_date = parse_adzuna_date(job['closing_date'])
                     if close_date and close_date.date() >= today:
-                        keep = True
+                        filtered.append(job)
                 else:
-                    # No closing date: rely on posted date (last 30 days)
-                    posted = job.get('created')
-                    if posted:
-                        posted_date = parse_adzuna_date(posted)
-                        if posted_date and posted_date >= cutoff_date:
-                            keep = True
-                    else:
-                        keep = True
-                if keep:
-                    active_jobs.append(job)
-            # Sort by closing date (future first) or posted date (newest first)
-            active_jobs.sort(key=lambda x: parse_adzuna_date(x.get('closing_date')) or parse_adzuna_date(x.get('created')) or datetime.min, reverse=True)
-            st.session_state.jobs = active_jobs[:job_limit]
+                    filtered.append(job)
+            st.session_state.jobs = filtered[:job_limit]
 
             for idx, job in enumerate(st.session_state.jobs):
                 # Strip HTML from description
@@ -826,7 +787,7 @@ with col_mid:
                 st.markdown("---")
         st.markdown('</div>', unsafe_allow_html=True)
 
-# Right: Saved Jobs (unchanged)
+# Right: Saved Jobs
 with col_right:
     with st.container():
         st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -848,25 +809,27 @@ with col_right:
         st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------------------
-# Upgrade & Reports (unchanged)
+# Upgrade & Reports (dark mode friendly, no checkboxes)
 # ---------------------------
 st.markdown("---")
 st.subheader("🚀 Upgrade Your Career Toolkit")
 st.markdown("Unlock full potential with our premium plans.")
+
 col_card1, col_card2 = st.columns(2)
+
 with col_card1:
     st.markdown("""
-    <div class="pricing-card">
-        <div class="pricing-badge">⭐ MOST POPULAR</div>
-        <div class="pricing-title">Premium</div>
-        <div class="pricing-price">$7<span style="font-size:1rem;">/month</span></div>
-        <div class="pricing-price" style="font-size:1.2rem;">or $29 lifetime</div>
-        <div class="pricing-features">
-            ✅ Recruiter verdict<br>
-            ✅ Missing keywords & rewrite suggestions<br>
-            ✅ 10 job matches + match scores<br>
-            ✅ Full cover‑letter diagnostics<br>
-            ✅ ATS checklist & PDF report
+    <div style="background: white; border-radius: 20px; padding: 1.5rem; text-align: center; border: 1px solid #e2e8f0; color: #0f172a;">
+        <div style="display: inline-block; background-color: #6C63FF; color: white; padding: 0.2rem 1rem; border-radius: 30px; font-size: 0.7rem; margin-bottom: 1rem;">⭐ MOST POPULAR</div>
+        <div style="font-size: 1.5rem; font-weight: 700;">Premium</div>
+        <div style="font-size: 2rem; font-weight: 800; color: #4A90E2; margin: 1rem 0;">$7<span style="font-size:1rem;">/month</span></div>
+        <div style="font-size: 1.2rem; margin-bottom: 1rem;">or <strong>$29 lifetime</strong></div>
+        <div style="text-align: left; margin: 1rem 0;">
+            <div>✅ Recruiter verdict</div>
+            <div>✅ Missing keywords & rewrite suggestions</div>
+            <div>✅ 10 job matches + match scores</div>
+            <div>✅ Full cover‑letter diagnostics</div>
+            <div>✅ ATS checklist & PDF report</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -894,20 +857,21 @@ with col_card1:
             st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
         except Exception as e:
             st.error(f"Payment error: {e}")
+
 with col_card2:
     st.markdown("""
-    <div class="pricing-card">
-        <div class="pricing-badge">🚀 BEST VALUE</div>
-        <div class="pricing-title">Pro</div>
-        <div class="pricing-price">$15<span style="font-size:1rem;">/month</span></div>
-        <div class="pricing-price" style="font-size:1.2rem;">or $49 lifetime</div>
-        <div class="pricing-features">
-            ✅ All Premium features<br>
-            ✅ CV draft generator<br>
-            ✅ Cover letter generator<br>
-            ✅ Signature cleaner<br>
-            ✅ 25+ job matches<br>
-            ✅ Executive intelligence report
+    <div style="background: white; border-radius: 20px; padding: 1.5rem; text-align: center; border: 1px solid #e2e8f0; color: #0f172a;">
+        <div style="display: inline-block; background-color: #6C63FF; color: white; padding: 0.2rem 1rem; border-radius: 30px; font-size: 0.7rem; margin-bottom: 1rem;">🚀 BEST VALUE</div>
+        <div style="font-size: 1.5rem; font-weight: 700;">Pro</div>
+        <div style="font-size: 2rem; font-weight: 800; color: #4A90E2; margin: 1rem 0;">$15<span style="font-size:1rem;">/month</span></div>
+        <div style="font-size: 1.2rem; margin-bottom: 1rem;">or <strong>$49 lifetime</strong></div>
+        <div style="text-align: left; margin: 1rem 0;">
+            <div>✅ All Premium features</div>
+            <div>✅ CV draft generator</div>
+            <div>✅ Cover letter generator</div>
+            <div>✅ Signature cleaner</div>
+            <div>✅ 25+ job matches</div>
+            <div>✅ Executive intelligence report</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -982,6 +946,9 @@ if st.session_state.pro:
             except Exception as e:
                 st.error(f"Error: {e}")
 
+# ---------------------------
+# Footer
+# ---------------------------
 st.markdown("""
 <div class="footer">
 <b>AI Career Intelligence</b> • Powered by Gemini AI • Worldwide job search support
