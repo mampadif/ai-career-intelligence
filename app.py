@@ -30,8 +30,11 @@ APP_URL = st.secrets["APP_URL"]
 PREMIUM_UNLOCK_CODE = st.secrets["PREMIUM_UNLOCK_CODE"].strip()
 PRO_UNLOCK_CODE = st.secrets["PRO_UNLOCK_CODE"].strip()
 
+# Optional: RapidAPI key for JSearch fallback
+RAPIDAPI_KEY = st.secrets.get("RAPIDAPI_KEY", "")
+
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-2.0-flash")  # Updated to stable model
+model = genai.GenerativeModel("gemini-2.0-flash")
 stripe.api_key = STRIPE_SECRET_KEY
 
 COUNTRY_MAP = {
@@ -225,7 +228,6 @@ def analyze_cv(cv_text, full=False):
     try:
         return json.loads(raw)
     except:
-        # Provide a safe fallback to prevent downstream errors
         return {
             "strength_score": 50,
             "ats_score": 50,
@@ -324,6 +326,7 @@ def parse_adzuna_date(date_str):
         return None
 
 def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
+    """Enhanced Adzuna fetcher with detailed logging and error handling."""
     url = f"https://api.adzuna.com/v1/api/jobs/{country_code}/search/1"
     params = {
         "app_id": ADZUNA_APP_ID,
@@ -333,64 +336,120 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
     }
     if location_refine and location_refine.strip():
         params["where"] = location_refine.strip()
+    
+    log_info = {
+        "status": None,
+        "error": None,
+        "raw_count": 0,
+        "active_count": 0
+    }
+    
     try:
         resp = requests.get(url, params=params, timeout=10)
-        if resp.status_code == 200:
-            jobs = resp.json().get("results", [])
-            formatted = []
-            for j in jobs:
-                company = j.get("company", {})
-                company_name = company.get("display_name", "Unknown") if isinstance(company, dict) else str(company) if company else "Unknown"
-                created = j.get("created")
-                closing_date = j.get("closing_date")
-                date_display = "📅 Date not specified"
-                if closing_date:
-                    date_display = f"📅 Closing: {closing_date}"
-                elif created:
-                    date_display = f"📅 Posted: {created}"
-                formatted.append({
-                    "title": j.get("title", "Untitled"),
-                    "company": company_name,
-                    "location": location_refine or country_code.upper(),
-                    "url": j.get("redirect_url", "#"),
-                    "description": j.get("description", ""),
-                    "date_display": date_display,
-                    "closing_date": closing_date,
-                    "created": created,
-                    "is_expired": False
-                })
-            today = datetime.now().date()
-            cutoff = datetime.now() - timedelta(days=30)
-            active = []
-            for job in formatted:
-                keep = False
-                if job.get('closing_date'):
-                    close_date = parse_adzuna_date(job['closing_date'])
-                    if close_date and close_date.date() >= today:
+        log_info["status"] = resp.status_code
+        if resp.status_code != 200:
+            log_info["error"] = f"HTTP {resp.status_code}: {resp.text[:200]}"
+            return [], log_info
+        
+        data = resp.json()
+        jobs = data.get("results", [])
+        log_info["raw_count"] = len(jobs)
+        
+        formatted = []
+        for j in jobs:
+            company = j.get("company", {})
+            company_name = company.get("display_name", "Unknown") if isinstance(company, dict) else str(company) if company else "Unknown"
+            created = j.get("created")
+            closing_date = j.get("closing_date")
+            date_display = "📅 Date not specified"
+            if closing_date:
+                date_display = f"📅 Closing: {closing_date}"
+            elif created:
+                date_display = f"📅 Posted: {created}"
+            formatted.append({
+                "title": j.get("title", "Untitled"),
+                "company": company_name,
+                "location": location_refine or country_code.upper(),
+                "url": j.get("redirect_url", "#"),
+                "description": j.get("description", ""),
+                "date_display": date_display,
+                "closing_date": closing_date,
+                "created": created,
+                "is_expired": False
+            })
+        
+        today = datetime.now().date()
+        cutoff = datetime.now() - timedelta(days=30)
+        active = []
+        for job in formatted:
+            keep = False
+            if job.get('closing_date'):
+                close_date = parse_adzuna_date(job['closing_date'])
+                if close_date and close_date.date() >= today:
+                    keep = True
+            else:
+                posted = job.get('created')
+                if posted:
+                    posted_date = parse_adzuna_date(posted)
+                    if posted_date and posted_date >= cutoff:
                         keep = True
                 else:
-                    posted = job.get('created')
-                    if posted:
-                        posted_date = parse_adzuna_date(posted)
-                        if posted_date and posted_date >= cutoff:
-                            keep = True
-                    else:
-                        keep = True
-                if keep:
-                    active.append(job)
-            return deduplicate_jobs(active)[:limit]
-        else:
-            return []
+                    keep = True
+            if keep:
+                active.append(job)
+        log_info["active_count"] = len(active)
+        unique_jobs = deduplicate_jobs(active)[:limit]
+        return unique_jobs, log_info
+        
     except Exception as e:
-        return []
+        log_info["error"] = str(e)
+        return [], log_info
+
+def get_jobs_from_jsearch(query, country_code, location_refine, limit=5):
+    """Fallback job search using JSearch API (RapidAPI)."""
+    if not RAPIDAPI_KEY:
+        return [], {"error": "RAPIDAPI_KEY not configured"}
+    
+    url = "https://jsearch.p.rapidapi.com/search"
+    # Map country codes to JSearch country param (simplified)
+    country_param = country_code.upper()
+    querystring = {
+        "query": f"{query} {location_refine}" if location_refine else query,
+        "page": "1",
+        "num_pages": "1",
+        "country": country_param,
+        "date_posted": "month"
+    }
+    headers = {
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Host": "jsearch.p.rapidapi.com"
+    }
+    try:
+        response = requests.get(url, headers=headers, params=querystring, timeout=10)
+        if response.status_code == 200:
+            data = response.json().get("data", [])
+            jobs = []
+            for j in data[:limit]:
+                jobs.append({
+                    "title": j.get("job_title", "Untitled"),
+                    "company": j.get("employer_name", "Unknown"),
+                    "location": j.get("job_city", "") + ", " + j.get("job_country", ""),
+                    "url": j.get("job_apply_link", j.get("job_google_link", "#")),
+                    "description": j.get("job_description", ""),
+                    "date_display": f"📅 Posted: {j.get('job_posted_at_datetime_utc', 'recently')[:10]}",
+                    "closing_date": None,
+                    "created": j.get('job_posted_at_datetime_utc', ''),
+                    "is_expired": False
+                })
+            return jobs, {"raw_count": len(data), "active_count": len(jobs)}
+        else:
+            return [], {"error": f"HTTP {response.status_code}"}
+    except Exception as e:
+        return [], {"error": str(e)}
 
 def get_job_matches(cv_text, analysis, manual_query, country_name, country_code, location_refine, limit=5):
-    """
-    Returns job matches. Now with improved fallback logic.
-    """
     target_roles = analysis.get("target_roles", [])
     
-    # Determine query
     if manual_query and len(manual_query.strip()) > 2:
         query = manual_query.strip()
         source = "manual override"
@@ -401,14 +460,12 @@ def get_job_matches(cv_text, analysis, manual_query, country_name, country_code,
         query = generate_job_query(cv_text).strip()
         source = "CV text extraction"
     
-    # 🔥 CRITICAL FIX: Ensure we always have a valid query
     if not query or len(query) < 3:
         query = "Business Analyst"
         source = "fallback (no specific title extracted)"
         st.warning(f"⚠️ Could not determine a job title from your CV. Using '{query}' as fallback.")
     
     original_query = query
-    # Broaden the query if it's too senior-specific
     if any(word in query.lower() for word in ["head", "director", "chief", "vp", "vice president", "senior director"]):
         words = query.split()
         if words[0].lower() in ["head", "director", "chief", "vp"]:
@@ -422,14 +479,34 @@ def get_job_matches(cv_text, analysis, manual_query, country_name, country_code,
     
     st.success(f"🎯 Searching for: **{query}** (from {source}) in {country_name if country_name != 'Other' else country_code.upper()}")
     
-    # Adzuna supported countries list (Nigeria, Kenya, etc. are not officially supported)
     adzuna_supported = ["us", "gb", "ca", "au", "de", "fr", "in", "za"]
     
+    # Try Adzuna first
+    jobs = []
+    log_info = {}
     if country_code in adzuna_supported:
-        jobs = get_jobs_from_adzuna(query, country_code, location_refine, limit)
+        jobs, log_info = get_jobs_from_adzuna(query, country_code, location_refine, limit)
         if not jobs:
+            # Show diagnostic info in an expander
+            with st.expander("🔧 Adzuna API Diagnostics", expanded=False):
+                st.write(f"**Status Code:** {log_info.get('status')}")
+                st.write(f"**Raw jobs returned:** {log_info.get('raw_count')}")
+                st.write(f"**Active jobs after date filter:** {log_info.get('active_count')}")
+                if log_info.get('error'):
+                    st.error(f"**Error:** {log_info['error']}")
             st.warning(f"No active {query} jobs found via Adzuna.")
-            # Show helpful alternative links
+            
+            # Try JSearch fallback if configured
+            if RAPIDAPI_KEY:
+                with st.spinner("Trying backup job source (JSearch)..."):
+                    fallback_jobs, fb_log = get_jobs_from_jsearch(query, country_code, location_refine, limit)
+                    if fallback_jobs:
+                        st.success(f"✅ Found {len(fallback_jobs)} jobs via backup source!")
+                        jobs = fallback_jobs
+                    else:
+                        st.info("Backup source also returned no results.")
+            
+            # Always show alternative links
             encoded_query = query.replace(' ', '+')
             encoded_location = location_refine.replace(' ', '+') if location_refine else country_code.upper()
             st.info(f"💡 **Try these real job boards:**\n"
@@ -437,15 +514,21 @@ def get_job_matches(cv_text, analysis, manual_query, country_name, country_code,
                     f"- [LinkedIn](https://www.linkedin.com/jobs/search?keywords={query.replace(' ', '%20')}&location={location_refine or country_name})\n"
                     f"- [Glassdoor](https://www.glassdoor.com/Job/jobs.htm?sc.keyword={encoded_query}&locT=C&locId=&locKeyword={encoded_location})\n"
                     f"- Or adjust your job title (e.g., '{query}' → 'AI Researcher', 'Machine Learning Lead')")
-        return jobs
     else:
-        # 🔥 IMPROVED: Show clear message and return empty list (user sees alternative links)
         st.warning(f"📢 Direct job listings are not yet available for {country_name}.")
         st.markdown(f"**Try these global job platforms:**\n"
                     f"- [Indeed Worldwide](https://www.indeed.com/worldwide?q={query.replace(' ', '+')})\n"
                     f"- [LinkedIn Jobs](https://www.linkedin.com/jobs/search?keywords={query.replace(' ', '%20')}&location={location_refine or country_name})\n"
                     f"- [Google Jobs](https://www.google.com/search?q={query.replace(' ', '+')}+jobs+{location_refine or country_name})")
-        return []
+        # Optionally try JSearch even for unsupported countries
+        if RAPIDAPI_KEY:
+            with st.spinner("Trying global job search via JSearch..."):
+                fallback_jobs, _ = get_jobs_from_jsearch(query, country_code, location_refine, limit)
+                if fallback_jobs:
+                    st.success(f"✅ Found {len(fallback_jobs)} jobs via backup source!")
+                    jobs = fallback_jobs
+    
+    return jobs
 
 @st.cache_data(ttl=3600)
 def score_job_match(cv_text, job_title, job_description=""):
@@ -568,7 +651,7 @@ def generate_job_specific_cover_letter(cv_text, job_title, company, job_descript
     return response.text
 
 # ---------------------------
-# 5. Intro Page (Plan Selection + Code Entry)
+# 5. Intro Page (unchanged)
 # ---------------------------
 def intro_page():
     st.markdown("""
@@ -671,10 +754,9 @@ def intro_page():
                     st.error("❌ Invalid Pro code.")
 
 # ---------------------------
-# 6. Workspace Page (with all fixes applied)
+# 6. Workspace Page (with enhanced job search diagnostics)
 # ---------------------------
 def workspace_page():
-    # Tier indicator
     if st.session_state.pro:
         st.info("🚀 **Pro Tier Active** – Full application engine unlocked")
     elif st.session_state.premium:
@@ -682,7 +764,6 @@ def workspace_page():
     else:
         st.info("🔓 **Free Tier** – Basic scores and 1 job match. Upgrade to unlock more.")
 
-    # Code entry for free users
     if not st.session_state.premium and not st.session_state.pro:
         with st.expander("🔓 Enter unlock code here", expanded=False):
             col_code1, col_code2 = st.columns(2)
@@ -719,7 +800,6 @@ def workspace_page():
         analysis = analyze_cv_cached(cv_text, full=False)
         st.session_state.analysis = analysis
         st.session_state.target_roles = analysis.get('target_roles', [])
-        # Ensure primary_role is never empty
         st.session_state.primary_role = st.session_state.target_roles[0] if st.session_state.target_roles and st.session_state.target_roles[0] != "N/A" else "Business Analyst"
 
     st.subheader("📝 Recruiter's Verdict on Your CV")
@@ -769,7 +849,7 @@ def workspace_page():
     st.markdown("---")
     col_left, col_mid, col_right = st.columns(3)
 
-    # Improve CV card
+    # Improve CV card (unchanged)
     with col_left:
         with st.container():
             st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -803,7 +883,7 @@ def workspace_page():
                     st.info("🚀 Upgrade to Pro for CV draft generator")
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # Find Jobs card (with debug info and improved fallbacks)
+    # Find Jobs card (with enhanced diagnostics)
     with col_mid:
         with st.container():
             st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -817,16 +897,9 @@ def workspace_page():
                 location_refine = st.text_input("City / Region", placeholder="e.g., London, Nairobi, Remote", key="location_input")
             manual_query = st.text_input("Override job title (optional)", placeholder=f"Leave empty to use {st.session_state.primary_role}", key="manual_query_input")
             
-            # --- DEBUG BLOCK (uncomment to diagnose issues) ---
-            # with st.expander("🔧 Debug Info", expanded=False):
-            #     st.write("CV text length:", len(st.session_state.get("cv_text", "")))
-            #     st.write("Analysis target roles:", st.session_state.analysis.get("target_roles") if st.session_state.analysis else None)
-            #     st.write("Primary role:", st.session_state.primary_role)
-            #     st.write("Selected country:", country_display, "->", country_code)
-            #     st.write("Manual query override:", manual_query)
-            #     st.write("Tier:", "PRO" if st.session_state.pro else "PREMIUM" if st.session_state.premium else "FREE")
-            # -------------------------------------------------
-
+            # Debug toggle (can be removed after testing)
+            show_debug = st.checkbox("Show API diagnostics", value=False)
+            
             search_clicked = st.button("🔍 Search for Jobs", use_container_width=True, type="primary")
 
             if st.session_state.pro:
@@ -857,27 +930,6 @@ def workspace_page():
                         st.session_state.jobs = []
 
             if st.session_state.jobs:
-                today = datetime.now().date()
-                cutoff = datetime.now() - timedelta(days=30)
-                filtered = []
-                for job in st.session_state.jobs:
-                    keep = False
-                    if job.get('closing_date'):
-                        close_date = parse_adzuna_date(job['closing_date'])
-                        if close_date and close_date.date() >= today:
-                            keep = True
-                    else:
-                        posted = job.get('created')
-                        if posted:
-                            posted_date = parse_adzuna_date(posted)
-                            if posted_date and posted_date >= cutoff:
-                                keep = True
-                        else:
-                            keep = True
-                    if keep:
-                        filtered.append(job)
-                st.session_state.jobs = filtered[:job_limit]
-
                 for idx, job in enumerate(st.session_state.jobs):
                     with st.container():
                         st.markdown(f"**{job['title']}**")
@@ -941,7 +993,7 @@ def workspace_page():
                         st.markdown("---")
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # Saved Jobs card
+    # Saved Jobs card (unchanged)
     with col_right:
         with st.container():
             st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -962,7 +1014,7 @@ def workspace_page():
                     st.markdown("---")
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # Cover Letter Feedback Section
+    # Cover Letter Feedback Section (unchanged)
     st.markdown("---")
     st.subheader("📝 Cover Letter Feedback")
     st.caption("Upload or paste your cover letter to get detailed recruiter feedback.")
@@ -1016,7 +1068,7 @@ def workspace_page():
     elif analyze_cl_clicked:
         st.warning("Please upload or paste a cover letter first.")
 
-    # Upgrade & Reports (conditional)
+    # Upgrade & Reports (unchanged)
     st.markdown('<div id="upgrade"></div>', unsafe_allow_html=True)
     if not st.session_state.premium and not st.session_state.pro:
         st.markdown("---")
@@ -1182,7 +1234,6 @@ def workspace_page():
         checklist_text = generate_ats_checklist(full_analysis)
         st.download_button("📋 Download ATS Optimization Checklist", checklist_text, file_name="ats_checklist.txt")
 
-    # Signature cleaner (Pro only)
     if st.session_state.pro:
         st.subheader("✍️ Signature Cleaner")
         uploaded_sig = st.file_uploader("Upload signature image (JPG, PNG, or JPEG)", type=["jpg", "jpeg", "png"], key="sig_upload")
