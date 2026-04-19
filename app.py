@@ -29,21 +29,9 @@ APP_URL = st.secrets["APP_URL"]
 PREMIUM_UNLOCK_CODE = st.secrets["PREMIUM_UNLOCK_CODE"].strip()
 PRO_UNLOCK_CODE = st.secrets["PRO_UNLOCK_CODE"].strip()
 
-# Adzuna credentials with backward compatibility
-ADZUNA_APP_ID = st.secrets.get("ADZUNA_APP_ID")
-if not ADZUNA_APP_ID:
-    st.error("❌ Missing ADZUNA_APP_ID in secrets. Please add it to your secrets.toml.")
-    st.stop()
-
-# Try to get ADZUNA_APP_KEY first, fallback to JOB_API_KEY (older name)
-ADZUNA_APP_KEY = st.secrets.get("ADZUNA_APP_KEY")
-if not ADZUNA_APP_KEY:
-    ADZUNA_APP_KEY = st.secrets.get("ADZUNA_API_KEY")
-    if ADZUNA_APP_KEY:
-        st.warning("⚠️ Using JOB_API_KEY as Adzuna key. Consider renaming to ADZUNA_APP_KEY.")
-    else:
-        st.error("❌ Missing Adzuna API key. Add ADZUNA_APP_KEY or JOB_API_KEY to secrets.")
-        st.stop()
+# Adzuna credentials (clean version - no warning)
+ADZUNA_APP_ID = st.secrets["ADZUNA_APP_ID"]
+ADZUNA_APP_KEY = st.secrets["ADZUNA_API_KEY"]  # Your exact secret name
 
 # Optional: RapidAPI key for JSearch fallback
 RAPIDAPI_KEY = st.secrets.get("RAPIDAPI_KEY", "")
@@ -69,7 +57,7 @@ COUNTRY_MAP = {
 }
 
 # ---------------------------
-# 2. Custom CSS (unchanged)
+# 2. Custom CSS
 # ---------------------------
 st.markdown("""
 <style>
@@ -140,7 +128,7 @@ body { background-color: #f8fafc; font-family: 'Inter', sans-serif; color: #0f17
 """, unsafe_allow_html=True)
 
 # ---------------------------
-# 3. Session State (unchanged)
+# 3. Session State
 # ---------------------------
 if "premium" not in st.session_state:
     st.session_state.premium = False
@@ -186,7 +174,7 @@ if "success_pro_lifetime" in st.query_params:
     st.session_state.page = "workspace"
 
 # ---------------------------
-# 4. Helper Functions (all functions from previous version with fixes)
+# 4. Helper Functions
 # ---------------------------
 def extract_text_from_file(uploaded_file):
     if uploaded_file.name.endswith(".pdf"):
@@ -713,7 +701,7 @@ def generate_job_specific_cover_letter(cv_text, job_title, company, job_descript
     return response.text
 
 # ---------------------------
-# 5. Intro Page (unchanged)
+# 5. Intro Page
 # ---------------------------
 def intro_page():
     st.markdown("""
@@ -816,7 +804,7 @@ def intro_page():
                     st.error("❌ Invalid Pro code.")
 
 # ---------------------------
-# 6. Workspace Page (unchanged from previous complete version)
+# 6. Workspace Page
 # ---------------------------
 def workspace_page():
     if st.session_state.pro:
@@ -1002,6 +990,15 @@ def workspace_page():
                             st.caption(job.get('date_display', '📅 Date not specified'))
                         with col_loc:
                             st.caption(f"📍 {job.get('location', 'Not specified')}")
+                        
+                        # Show closing date warning if near deadline
+                        if job.get('closing_date'):
+                            close_date = parse_adzuna_date(job['closing_date'])
+                            if close_date:
+                                days_left = (close_date.date() - datetime.now().date()).days
+                                if days_left <= 7:
+                                    st.warning(f"⚠️ Closing in {days_left} day{'s' if days_left != 1 else ''}!")
+
                         raw_desc = job.get('description', '')
                         clean_desc = re.sub(r'<[^>]+>', '', raw_desc)
                         clean_desc = re.sub(r'\s+', ' ', clean_desc).strip()
