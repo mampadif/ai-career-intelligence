@@ -51,7 +51,7 @@ COUNTRY_MAP = {
 }
 
 # ---------------------------
-# 2. Custom CSS (unchanged, dark mode friendly)
+# 2. Custom CSS
 # ---------------------------
 st.markdown("""
 <style>
@@ -115,6 +115,15 @@ body { background-color: #f8fafc; font-family: 'Inter', sans-serif; color: #0f17
 .tier-badge-free { background-color: #6c757d; color: white; }
 .tier-badge-premium { background-color: #4A90E2; color: white; }
 .tier-badge-pro { background: linear-gradient(90deg, #6C63FF, #4A90E2); color: white; }
+.persistent-banner {
+    background-color: #e0f2fe;
+    padding: 10px;
+    border-radius: 12px;
+    margin-bottom: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
 @media (prefers-color-scheme: dark) {
     body { background-color: #0f172a; color: #e2e8f0; }
     .hero { background: linear-gradient(135deg, #1e293b, #0f172a); }
@@ -126,6 +135,7 @@ body { background-color: #f8fafc; font-family: 'Inter', sans-serif; color: #0f17
     .action-title { color: #f1f5f9; }
     .footer { border-top-color: #334155; color: #94a3b8; }
     .stButton > button { background: linear-gradient(90deg, #3b82f6, #8b5cf6); }
+    .persistent-banner { background-color: #1e293b; border: 1px solid #334155; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -365,8 +375,6 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
                     "created": created,
                     "is_expired": False
                 })
-            # STRICT FILTERING: only keep jobs with closing_date in the future (or today)
-            # and if no closing_date, keep only if posted within last 30 days
             today = datetime.now().date()
             cutoff = datetime.now() - timedelta(days=30)
             active = []
@@ -377,14 +385,12 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
                     if close_date and close_date.date() >= today:
                         keep = True
                 else:
-                    # No closing date: rely on posted date
                     posted = job.get('created')
                     if posted:
                         posted_date = parse_adzuna_date(posted)
                         if posted_date and posted_date >= cutoff:
                             keep = True
                     else:
-                        # No date info at all – assume active but add warning
                         keep = True
                 if keep:
                     active.append(job)
@@ -416,7 +422,6 @@ def get_jobs_from_gemini_search(cv_text, job_title, location, limit=5):
         raw = clean_json_response(response.text)
         result = json.loads(raw)
         jobs = result.get("jobs", [])
-        # For Gemini jobs, we don't have closing date, so we keep them but show date_posted
         return [{
             "title": j.get("job_title", "Untitled"),
             "company": j.get("company_name", "Unknown"),
@@ -691,18 +696,53 @@ def intro_page():
                     st.error("❌ Invalid Pro code.")
 
 # ---------------------------
-# 6. Workspace Page (with strict job filtering)
+# 6. Workspace Page (with persistent tier banner and easy code entry)
 # ---------------------------
 def workspace_page():
+    # Persistent tier banner at the top
+    tier_display = ""
+    upgrade_link = ""
     if st.session_state.pro:
-        st.markdown('<div style="text-align:right;"><span class="tier-badge-pro">🚀 PRO TIER ACTIVE</span></div>', unsafe_allow_html=True)
-        st.success("✅ Full application engine unlocked")
+        tier_display = "🚀 Pro Tier Active"
+        upgrade_link = None
     elif st.session_state.premium:
-        st.markdown('<div style="text-align:right;"><span class="tier-badge-premium">⭐ PREMIUM TIER ACTIVE</span></div>', unsafe_allow_html=True)
-        st.info("✅ Improvement tools unlocked")
+        tier_display = "⭐ Premium Tier Active"
+        upgrade_link = "Upgrade to Pro"
     else:
-        st.markdown('<div style="text-align:right;"><span class="tier-badge-free">🔓 FREE TIER</span></div>', unsafe_allow_html=True)
-        st.info("📌 Free tier includes basic scores and 1 job match")
+        tier_display = "🔓 Free Tier"
+        upgrade_link = "Upgrade to Premium or Pro"
+
+    st.markdown(f"""
+    <div class="persistent-banner">
+        <div><strong>{tier_display}</strong></div>
+        <div>{f'<a href="#upgrade" style="text-decoration: none; background-color: #6C63FF; color: white; padding: 6px 12px; border-radius: 20px;">{upgrade_link}</a>' if upgrade_link else ''}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # If free, show easy code entry expander
+    if not st.session_state.premium and not st.session_state.pro:
+        with st.expander("🔓 Enter unlock code here", expanded=False):
+            col_code1, col_code2 = st.columns(2)
+            with col_code1:
+                premium_input = st.text_input("Premium unlock code", type="password", key="top_premium_code")
+                if st.button("Apply Premium Code", key="top_apply_premium"):
+                    if premium_input.strip() == PREMIUM_UNLOCK_CODE:
+                        st.session_state.premium = True
+                        st.session_state.pro = False
+                        st.success("✅ Premium unlocked! Refreshing...")
+                        st.rerun()
+                    else:
+                        st.error("❌ Invalid Premium code.")
+            with col_code2:
+                pro_input = st.text_input("Pro unlock code", type="password", key="top_pro_code")
+                if st.button("Apply Pro Code", key="top_apply_pro"):
+                    if pro_input.strip() == PRO_UNLOCK_CODE:
+                        st.session_state.premium = False
+                        st.session_state.pro = True
+                        st.success("✅ Pro unlocked! Refreshing...")
+                        st.rerun()
+                    else:
+                        st.error("❌ Invalid Pro code.")
 
     uploaded_file = st.file_uploader("Upload your CV (PDF or DOCX)", type=["pdf", "docx"])
     if not uploaded_file:
@@ -799,7 +839,7 @@ def workspace_page():
                     st.info("🚀 Upgrade to Pro for CV draft generator")
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # Find Jobs card (with strict date filtering)
+    # Find Jobs card (strict date filtering)
     with col_mid:
         with st.container():
             st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -834,7 +874,6 @@ def workspace_page():
                         st.session_state.jobs = []
 
             if st.session_state.jobs:
-                # Additional safety filter (redundant but ensures no old jobs slip through)
                 today = datetime.now().date()
                 cutoff = datetime.now() - timedelta(days=30)
                 filtered = []
@@ -993,7 +1032,8 @@ def workspace_page():
     elif analyze_cl_clicked:
         st.warning("Please upload or paste a cover letter first.")
 
-    # Upgrade & Reports (conditional)
+    # Upgrade & Reports (conditional, with anchor for banner link)
+    st.markdown('<div id="upgrade"></div>', unsafe_allow_html=True)
     if not st.session_state.premium and not st.session_state.pro:
         st.markdown("---")
         st.subheader("🚀 Upgrade Your Career Toolkit")
