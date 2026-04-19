@@ -24,8 +24,11 @@ STRIPE_PRICE_ID_PREMIUM_MONTHLY = st.secrets["STRIPE_PRICE_ID_PREMIUM_MONTHLY"]
 STRIPE_PRICE_ID_PREMIUM_LIFETIME = st.secrets["STRIPE_PRICE_ID_PREMIUM_LIFETIME"]
 STRIPE_PRICE_ID_PRO_MONTHLY = st.secrets["STRIPE_PRICE_ID_PRO_MONTHLY"]
 STRIPE_PRICE_ID_PRO_LIFETIME = st.secrets["STRIPE_PRICE_ID_PRO_LIFETIME"]
-JOB_API_KEY = st.secrets["JOB_API_KEY"]
+
+# Adzuna credentials – ensure these are set correctly in secrets
 ADZUNA_APP_ID = st.secrets["ADZUNA_APP_ID"]
+ADZUNA_APP_KEY = st.secrets["ADZUNA_APP_KEY"]
+
 APP_URL = st.secrets["APP_URL"]
 PREMIUM_UNLOCK_CODE = st.secrets["PREMIUM_UNLOCK_CODE"].strip()
 PRO_UNLOCK_CODE = st.secrets["PRO_UNLOCK_CODE"].strip()
@@ -320,17 +323,36 @@ def deduplicate_jobs(jobs):
     return unique
 
 def parse_adzuna_date(date_str):
+    """Robust date parser that handles multiple Adzuna formats."""
+    if not date_str:
+        return None
+    date_str = str(date_str).strip()
+
+    formats = [
+        "%Y-%m-%d",
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%dT%H:%M:%S.%fZ",
+        "%Y-%m-%d %H:%M:%S",
+    ]
+
+    for fmt in formats:
+        try:
+            return datetime.strptime(date_str, fmt)
+        except Exception:
+            pass
+
+    # Fallback: try first 10 chars as YYYY-MM-DD
     try:
-        return datetime.strptime(date_str, "%Y-%m-%d")
-    except:
+        return datetime.strptime(date_str[:10], "%Y-%m-%d")
+    except Exception:
         return None
 
 def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
-    """Enhanced Adzuna fetcher with relaxed date filter and diagnostics."""
+    """Enhanced Adzuna fetcher with robust date parsing and relaxed filtering."""
     url = f"https://api.adzuna.com/v1/api/jobs/{country_code}/search/1"
     params = {
         "app_id": ADZUNA_APP_ID,
-        "app_key": JOB_API_KEY,
+        "app_key": ADZUNA_APP_KEY,
         "results_per_page": limit * 2,
         "what": query
     }
@@ -374,24 +396,27 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
             })
         
         today = datetime.now().date()
-        cutoff = datetime.now() - timedelta(days=60)  # Relaxed from 30 to 60 days
+        cutoff = datetime.now() - timedelta(days=90)  # Relaxed to 90 days
         
         active = []
         for job in formatted:
             keep = False
-            if job.get('closing_date'):
-                close_date = parse_adzuna_date(job['closing_date'])
-                if close_date and close_date.date() >= today:
+            close_date = parse_adzuna_date(job.get("closing_date"))
+            created_date = parse_adzuna_date(job.get("created"))
+            
+            if close_date:
+                if close_date.date() >= today:
                     keep = True
-            elif job.get('created'):
-                posted_date = parse_adzuna_date(job['created'])
-                if posted_date and posted_date >= cutoff:
+            elif created_date:
+                if created_date >= cutoff:
                     keep = True
             else:
-                # No date info → keep it (better to show than hide)
+                # No parsable date → keep the job rather than discarding
                 keep = True
+            
             if keep:
                 active.append(job)
+        
         log_info["active_count"] = len(active)
         unique_jobs = deduplicate_jobs(active)[:limit]
         return unique_jobs, log_info
@@ -517,7 +542,7 @@ def get_job_matches(cv_text, analysis, manual_query, country_name, country_code,
     adzuna_supported = ["us", "gb", "ca", "au", "de", "fr", "in", "za"]
     all_jobs = []
     
-    # Determine per-query limit (allocate proportionally)
+    # Determine per-query limit
     per_query_limit = max(3, limit // len(search_queries) + 1)
     
     for q in search_queries:
@@ -525,20 +550,15 @@ def get_job_matches(cv_text, analysis, manual_query, country_name, country_code,
             jobs, log_info = get_jobs_from_adzuna(q, country_code, location_refine, per_query_limit)
             if jobs:
                 all_jobs.extend(jobs)
-            # Optionally show diagnostics for each query (can be noisy)
         elif RAPIDAPI_KEY:
             fallback_jobs, _ = get_jobs_from_jsearch(q, country_code, location_refine, per_query_limit)
             if fallback_jobs:
                 all_jobs.extend(fallback_jobs)
-        else:
-            # Unsupported country without fallback
-            pass
     
     unique_jobs = deduplicate_jobs(all_jobs)[:limit]
     
     if not unique_jobs:
         st.warning(f"No active jobs found for any of the searched titles.")
-        # Show diagnostic for primary query if no results
         if country_code in adzuna_supported:
             _, log_info = get_jobs_from_adzuna(query, country_code, location_refine, 5)
             with st.expander("🔧 Adzuna API Diagnostics", expanded=False):
@@ -681,7 +701,7 @@ def generate_job_specific_cover_letter(cv_text, job_title, company, job_descript
     return response.text
 
 # ---------------------------
-# 5. Intro Page (unchanged)
+# 5. Intro Page
 # ---------------------------
 def intro_page():
     st.markdown("""
@@ -913,7 +933,7 @@ def workspace_page():
                     st.info("🚀 Upgrade to Pro for CV draft generator")
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # Find Jobs card (with Gemini title expansion)
+    # Find Jobs card
     with col_mid:
         with st.container():
             st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -927,10 +947,7 @@ def workspace_page():
                 location_refine = st.text_input("City / Region", placeholder="e.g., London, Nairobi, Remote", key="location_input")
             manual_query = st.text_input("Override job title (optional)", placeholder=f"Leave empty to use {st.session_state.primary_role}", key="manual_query_input")
             
-            # Option to disable Gemini expansion (default True)
             use_expansion = st.checkbox("Expand search with related job titles (AI)", value=True)
-            
-            # Debug toggle
             show_debug = st.checkbox("Show API diagnostics", value=False)
             
             search_clicked = st.button("🔍 Search for Jobs", use_container_width=True, type="primary")
@@ -943,7 +960,7 @@ def workspace_page():
                 job_limit = 1
 
             if search_clicked:
-                with st.spinner("Searching for jobs (only active with future closing dates)..."):
+                with st.spinner("Searching for jobs..."):
                     try:
                         jobs = get_job_matches(
                             st.session_state.cv_text,
@@ -1102,7 +1119,7 @@ def workspace_page():
     elif analyze_cl_clicked:
         st.warning("Please upload or paste a cover letter first.")
 
-    # Upgrade & Reports (unchanged)
+    # Upgrade & Reports
     st.markdown('<div id="upgrade"></div>', unsafe_allow_html=True)
     if not st.session_state.premium and not st.session_state.pro:
         st.markdown("---")
