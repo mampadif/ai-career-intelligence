@@ -51,11 +51,11 @@ COUNTRY_MAP = {
 }
 
 # ---------------------------
-# 2. Custom CSS (unchanged)
+# 2. Custom CSS (unchanged, dark mode friendly)
 # ---------------------------
 st.markdown("""
 <style>
-body { background-color: #f8fafc; font-family: 'Inter', sans-serif; }
+body { background-color: #f8fafc; font-family: 'Inter', sans-serif; color: #0f172a; }
 .block-container { padding-top: 1rem; padding-bottom: 2rem; }
 .hero {
     text-align: center;
@@ -115,6 +115,18 @@ body { background-color: #f8fafc; font-family: 'Inter', sans-serif; }
 .tier-badge-free { background-color: #6c757d; color: white; }
 .tier-badge-premium { background-color: #4A90E2; color: white; }
 .tier-badge-pro { background: linear-gradient(90deg, #6C63FF, #4A90E2); color: white; }
+@media (prefers-color-scheme: dark) {
+    body { background-color: #0f172a; color: #e2e8f0; }
+    .hero { background: linear-gradient(135deg, #1e293b, #0f172a); }
+    .hero h1 { color: #f1f5f9; }
+    .hero p { color: #cbd5e1; }
+    .metric-card, .action-card, .job-container, .pricing-card { background-color: #1e293b; border-color: #334155; }
+    .metric-value { color: #f1f5f9; }
+    .metric-label { color: #94a3b8; }
+    .action-title { color: #f1f5f9; }
+    .footer { border-top-color: #334155; color: #94a3b8; }
+    .stButton > button { background: linear-gradient(90deg, #3b82f6, #8b5cf6); }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -164,7 +176,7 @@ if "success_pro_lifetime" in st.query_params:
     st.session_state.page = "workspace"
 
 # ---------------------------
-# 4. Helper Functions (full set)
+# 4. Helper Functions (full set, with strict date filtering)
 # ---------------------------
 def extract_text_from_file(uploaded_file):
     if uploaded_file.name.endswith(".pdf"):
@@ -353,14 +365,28 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
                     "created": created,
                     "is_expired": False
                 })
+            # STRICT FILTERING: only keep jobs with closing_date in the future (or today)
+            # and if no closing_date, keep only if posted within last 30 days
             today = datetime.now().date()
+            cutoff = datetime.now() - timedelta(days=30)
             active = []
             for job in formatted:
+                keep = False
                 if job.get('closing_date'):
                     close_date = parse_adzuna_date(job['closing_date'])
                     if close_date and close_date.date() >= today:
-                        active.append(job)
+                        keep = True
                 else:
+                    # No closing date: rely on posted date
+                    posted = job.get('created')
+                    if posted:
+                        posted_date = parse_adzuna_date(posted)
+                        if posted_date and posted_date >= cutoff:
+                            keep = True
+                    else:
+                        # No date info at all – assume active but add warning
+                        keep = True
+                if keep:
                     active.append(job)
             return deduplicate_jobs(active)[:limit]
         else:
@@ -390,6 +416,7 @@ def get_jobs_from_gemini_search(cv_text, job_title, location, limit=5):
         raw = clean_json_response(response.text)
         result = json.loads(raw)
         jobs = result.get("jobs", [])
+        # For Gemini jobs, we don't have closing date, so we keep them but show date_posted
         return [{
             "title": j.get("job_title", "Untitled"),
             "company": j.get("company_name", "Unknown"),
@@ -561,7 +588,7 @@ def generate_job_specific_cover_letter(cv_text, job_title, company, job_descript
     return response.text
 
 # ---------------------------
-# 5. Intro Page (Plan Selection + Code Entry)
+# 5. Intro Page (unchanged)
 # ---------------------------
 def intro_page():
     st.markdown("""
@@ -576,10 +603,10 @@ def intro_page():
 
     with col1:
         st.markdown("""
-        <div style="background: white; border-radius: 20px; padding: 1.5rem; text-align: center; border: 1px solid #e2e8f0; height: 100%;">
-            <div style="font-size: 1.5rem; font-weight: 700;">Free</div>
+        <div style="background: white; border-radius: 20px; padding: 1.5rem; text-align: center; border: 1px solid #e2e8f0; height: 100%; color: #0f172a;">
+            <div style="font-size: 1.5rem; font-weight: 700; color: #0f172a;">Free</div>
             <div style="font-size: 2rem; font-weight: 800; color: #4A90E2; margin: 1rem 0;">$0</div>
-            <div style="text-align: left; margin: 1rem 0;">
+            <div style="text-align: left; margin: 1rem 0; color: #0f172a;">
                 <div>✅ Basic CV scores</div>
                 <div>✅ 1 job match</div>
                 <div>✅ Preview of improvements</div>
@@ -594,12 +621,12 @@ def intro_page():
 
     with col2:
         st.markdown("""
-        <div style="background: white; border-radius: 20px; padding: 1.5rem; text-align: center; border: 1px solid #e2e8f0; height: 100%;">
+        <div style="background: white; border-radius: 20px; padding: 1.5rem; text-align: center; border: 1px solid #e2e8f0; height: 100%; color: #0f172a;">
             <div style="display: inline-block; background-color: #6C63FF; color: white; padding: 0.2rem 1rem; border-radius: 30px; font-size: 0.7rem; margin-bottom: 1rem;">⭐ POPULAR</div>
-            <div style="font-size: 1.5rem; font-weight: 700;">Premium</div>
+            <div style="font-size: 1.5rem; font-weight: 700; color: #0f172a;">Premium</div>
             <div style="font-size: 2rem; font-weight: 800; color: #4A90E2; margin: 1rem 0;">$7<span style="font-size:1rem;">/month</span></div>
-            <div style="font-size: 1.2rem; margin-bottom: 1rem;">or $29 lifetime</div>
-            <div style="text-align: left; margin: 1rem 0;">
+            <div style="font-size: 1.2rem; margin-bottom: 1rem; color: #0f172a;">or $29 lifetime</div>
+            <div style="text-align: left; margin: 1rem 0; color: #0f172a;">
                 <div>✅ Recruiter verdict</div>
                 <div>✅ Missing keywords & rewrite suggestions</div>
                 <div>✅ 10 job matches + match scores</div>
@@ -616,12 +643,12 @@ def intro_page():
 
     with col3:
         st.markdown("""
-        <div style="background: white; border-radius: 20px; padding: 1.5rem; text-align: center; border: 1px solid #e2e8f0; height: 100%;">
+        <div style="background: white; border-radius: 20px; padding: 1.5rem; text-align: center; border: 1px solid #e2e8f0; height: 100%; color: #0f172a;">
             <div style="display: inline-block; background-color: #6C63FF; color: white; padding: 0.2rem 1rem; border-radius: 30px; font-size: 0.7rem; margin-bottom: 1rem;">🚀 BEST VALUE</div>
-            <div style="font-size: 1.5rem; font-weight: 700;">Pro</div>
+            <div style="font-size: 1.5rem; font-weight: 700; color: #0f172a;">Pro</div>
             <div style="font-size: 2rem; font-weight: 800; color: #4A90E2; margin: 1rem 0;">$15<span style="font-size:1rem;">/month</span></div>
-            <div style="font-size: 1.2rem; margin-bottom: 1rem;">or $49 lifetime</div>
-            <div style="text-align: left; margin: 1rem 0;">
+            <div style="font-size: 1.2rem; margin-bottom: 1rem; color: #0f172a;">or $49 lifetime</div>
+            <div style="text-align: left; margin: 1rem 0; color: #0f172a;">
                 <div>✅ All Premium features</div>
                 <div>✅ CV draft generator</div>
                 <div>✅ Cover letter generator</div>
@@ -664,10 +691,9 @@ def intro_page():
                     st.error("❌ Invalid Pro code.")
 
 # ---------------------------
-# 6. Workspace Page (all existing functionality)
+# 6. Workspace Page (with strict job filtering)
 # ---------------------------
 def workspace_page():
-    # Display tier badge
     if st.session_state.pro:
         st.markdown('<div style="text-align:right;"><span class="tier-badge-pro">🚀 PRO TIER ACTIVE</span></div>', unsafe_allow_html=True)
         st.success("✅ Full application engine unlocked")
@@ -691,6 +717,9 @@ def workspace_page():
         st.session_state.analysis = analysis
         st.session_state.target_roles = analysis.get('target_roles', [])
         st.session_state.primary_role = st.session_state.target_roles[0] if st.session_state.target_roles and st.session_state.target_roles[0] != "N/A" else "your target role"
+
+    st.subheader("📝 Recruiter's Verdict on Your CV")
+    st.info(f"**{analysis['recruiter_verdict']}**")
 
     strength = analysis['strength_score']
     if strength >= 70:
@@ -740,15 +769,17 @@ def workspace_page():
     with col_left:
         with st.container():
             st.markdown('<div class="action-card">', unsafe_allow_html=True)
-            st.markdown('<div class="action-title">📝 Improve Your CV</div>', unsafe_allow_html=True)
+            st.markdown('<div class="action-title">📝 CV Mistakes & Improvements</div>', unsafe_allow_html=True)
+            strengths = analysis.get('top_strengths', [])
+            weaknesses = analysis.get('top_weaknesses', [])
+            st.markdown("**Strengths:**")
+            for s in strengths[:2]:
+                st.markdown(f"- {s}")
+            st.markdown("**Weaknesses (areas to fix):**")
+            for w in weaknesses[:2]:
+                st.markdown(f"- {w}")
             if not st.session_state.premium and not st.session_state.pro:
-                preview = get_missing_keywords_preview(st.session_state.cv_text)
-                preview_list = [k.strip() for k in preview.split(",") if k.strip()]
-                if preview_list:
-                    st.markdown(f"**Missing keywords preview:** `{preview_list[0]}, [LOCKED], [LOCKED]`")
-                st.markdown("🔒 **Upgrade to see full missing keywords and rewrite suggestions**")
-                if st.button("⭐ Upgrade Now →", key="upgrade_from_improve"):
-                    pass
+                st.markdown("🔒 **Upgrade to see full list of missing keywords and rewrite suggestions.**")
             else:
                 full_analysis = analyze_cv_cached(st.session_state.cv_text, full=True)
                 st.markdown("**Missing ATS Keywords:**")
@@ -768,7 +799,7 @@ def workspace_page():
                     st.info("🚀 Upgrade to Pro for CV draft generator")
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # Find Jobs card
+    # Find Jobs card (with strict date filtering)
     with col_mid:
         with st.container():
             st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -791,26 +822,37 @@ def workspace_page():
                 job_limit = 1
 
             if search_clicked:
-                with st.spinner("Searching for jobs..."):
+                with st.spinner("Searching for jobs (only active with future closing dates)..."):
                     try:
                         jobs = get_job_matches(st.session_state.cv_text, st.session_state.analysis, manual_query, country_display, country_code, location_refine, limit=job_limit)
                         st.session_state.jobs = jobs
                         st.session_state.match_scores = {}
                         if not jobs:
-                            st.warning("No jobs found. Try a different country or job title.")
+                            st.warning("No active jobs found. Try a different country or job title.")
                     except Exception as e:
                         st.error(f"Job search failed: {e}")
                         st.session_state.jobs = []
 
             if st.session_state.jobs:
+                # Additional safety filter (redundant but ensures no old jobs slip through)
                 today = datetime.now().date()
+                cutoff = datetime.now() - timedelta(days=30)
                 filtered = []
                 for job in st.session_state.jobs:
+                    keep = False
                     if job.get('closing_date'):
                         close_date = parse_adzuna_date(job['closing_date'])
                         if close_date and close_date.date() >= today:
-                            filtered.append(job)
+                            keep = True
                     else:
+                        posted = job.get('created')
+                        if posted:
+                            posted_date = parse_adzuna_date(posted)
+                            if posted_date and posted_date >= cutoff:
+                                keep = True
+                        else:
+                            keep = True
+                    if keep:
                         filtered.append(job)
                 st.session_state.jobs = filtered[:job_limit]
 
@@ -897,128 +939,226 @@ def workspace_page():
                     st.markdown("---")
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # Upgrade & Reports section (kept for in‑workspace upgrades)
+    # Cover Letter Feedback Section
     st.markdown("---")
-    st.subheader("🚀 Upgrade Your Career Toolkit")
-    col_card1, col_card2 = st.columns(2)
-    with col_card1:
-        st.markdown("""
-        <div style="background: white; border-radius: 20px; padding: 1.5rem; text-align: center; border: 1px solid #e2e8f0; color: #0f172a;">
-            <div style="display: inline-block; background-color: #6C63FF; color: white; padding: 0.2rem 1rem; border-radius: 30px; font-size: 0.7rem; margin-bottom: 1rem;">⭐ MOST POPULAR</div>
-            <div style="font-size: 1.5rem; font-weight: 700;">Premium</div>
-            <div style="font-size: 2rem; font-weight: 800; color: #4A90E2; margin: 1rem 0;">$7<span style="font-size:1rem;">/month</span></div>
-            <div style="font-size: 1.2rem; margin-bottom: 1rem;">or $29 lifetime</div>
-            <div style="text-align: left; margin: 1rem 0;">
-                <div>✅ Recruiter verdict</div>
-                <div>✅ Missing keywords & rewrite suggestions</div>
-                <div>✅ 10 job matches + match scores</div>
-                <div>✅ Full cover‑letter diagnostics</div>
-                <div>✅ ATS checklist & PDF report</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        if st.button("⭐ Premium Monthly $7", use_container_width=True):
+    st.subheader("📝 Cover Letter Feedback")
+    st.caption("Upload or paste your cover letter to get detailed recruiter feedback.")
+    cl_tab1, cl_tab2 = st.tabs(["📁 Upload Cover Letter", "📝 Paste Cover Letter"])
+    cover_letter_text = ""
+    with cl_tab1:
+        uploaded_cl = st.file_uploader("Upload cover letter (PDF, DOCX, TXT)", type=["pdf", "docx", "txt"], key="cl_upload")
+        if uploaded_cl:
             try:
-                session = stripe.checkout.Session.create(
-                    payment_method_types=["card"],
-                    line_items=[{"price": STRIPE_PRICE_ID_PREMIUM_MONTHLY, "quantity": 1}],
-                    mode="subscription",
-                    success_url=APP_URL + "?success_premium_monthly=true",
-                    cancel_url=APP_URL,
-                )
-                st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+                if uploaded_cl.name.endswith(".pdf"):
+                    reader = PyPDF2.PdfReader(uploaded_cl)
+                    cover_letter_text = "".join(page.extract_text() for page in reader.pages)
+                elif uploaded_cl.name.endswith(".docx"):
+                    doc = docx.Document(uploaded_cl)
+                    cover_letter_text = "\n".join(para.text for para in doc.paragraphs)
+                else:
+                    cover_letter_text = uploaded_cl.read().decode("utf-8")
+                st.success("✅ Cover letter loaded")
             except Exception as e:
-                st.error(f"Payment error: {e}")
-        if st.button("⭐ Premium Lifetime $29", use_container_width=True):
-            try:
-                session = stripe.checkout.Session.create(
-                    payment_method_types=["card"],
-                    line_items=[{"price": STRIPE_PRICE_ID_PREMIUM_LIFETIME, "quantity": 1}],
-                    mode="payment",
-                    success_url=APP_URL + "?success_premium_lifetime=true",
-                    cancel_url=APP_URL,
-                )
-                st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
-            except Exception as e:
-                st.error(f"Payment error: {e}")
-
-    with col_card2:
-        st.markdown("""
-        <div style="background: white; border-radius: 20px; padding: 1.5rem; text-align: center; border: 1px solid #e2e8f0; color: #0f172a;">
-            <div style="display: inline-block; background-color: #6C63FF; color: white; padding: 0.2rem 1rem; border-radius: 30px; font-size: 0.7rem; margin-bottom: 1rem;">🚀 BEST VALUE</div>
-            <div style="font-size: 1.5rem; font-weight: 700;">Pro</div>
-            <div style="font-size: 2rem; font-weight: 800; color: #4A90E2; margin: 1rem 0;">$15<span style="font-size:1rem;">/month</span></div>
-            <div style="font-size: 1.2rem; margin-bottom: 1rem;">or $49 lifetime</div>
-            <div style="text-align: left; margin: 1rem 0;">
-                <div>✅ All Premium features</div>
-                <div>✅ CV draft generator</div>
-                <div>✅ Cover letter generator</div>
-                <div>✅ Signature cleaner</div>
-                <div>✅ 25+ job matches</div>
-                <div>✅ Executive intelligence report</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        if st.button("🚀 Pro Monthly $15", use_container_width=True):
-            try:
-                session = stripe.checkout.Session.create(
-                    payment_method_types=["card"],
-                    line_items=[{"price": STRIPE_PRICE_ID_PRO_MONTHLY, "quantity": 1}],
-                    mode="subscription",
-                    success_url=APP_URL + "?success_pro_monthly=true",
-                    cancel_url=APP_URL,
-                )
-                st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
-            except Exception as e:
-                st.error(f"Payment error: {e}")
-        if st.button("🚀 Pro Lifetime $49", use_container_width=True):
-            try:
-                session = stripe.checkout.Session.create(
-                    payment_method_types=["card"],
-                    line_items=[{"price": STRIPE_PRICE_ID_PRO_LIFETIME, "quantity": 1}],
-                    mode="payment",
-                    success_url=APP_URL + "?success_pro_lifetime=true",
-                    cancel_url=APP_URL,
-                )
-                st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
-            except Exception as e:
-                st.error(f"Payment error: {e}")
-
-    st.markdown("---")
-    st.subheader("🔓 Already have a code?")
-    col_code1, col_code2 = st.columns(2)
-    with col_code1:
-        premium_input = st.text_input("Premium unlock code", type="password", key="workspace_premium_code")
-        if st.button("Apply Premium Code", key="workspace_apply_premium"):
-            if premium_input.strip() == PREMIUM_UNLOCK_CODE:
-                st.session_state.premium = True
-                st.session_state.pro = False
-                st.success("✅ Premium unlocked! Refreshing...")
-                st.rerun()
+                st.error(f"Error: {e}")
+    with cl_tab2:
+        cover_letter_text = st.text_area("Paste your cover letter", height=150, key="cl_paste")
+    analyze_cl_clicked = st.button("🔍 Analyze Cover Letter", use_container_width=True, type="primary")
+    if analyze_cl_clicked and cover_letter_text and len(cover_letter_text.strip()) > 50:
+        with st.spinner("Evaluating your cover letter..."):
+            if st.session_state.premium or st.session_state.pro:
+                cl_analysis = analyze_cover_letter_full(cover_letter_text, st.session_state.primary_role)
+                st.metric("Application Readiness Score", f"{cl_analysis.get('overall_score', 50)}/100")
+                st.info(f"**Recruiter Feedback:** {cl_analysis.get('verdict', 'Review needed')}")
+                st.markdown("**Detailed Dimensions:**")
+                col_cl1, col_cl2, col_cl3, col_cl4 = st.columns(4)
+                with col_cl1:
+                    st.metric("Role Alignment", f"{cl_analysis.get('alignment_score', 50)}/100")
+                with col_cl2:
+                    st.metric("Personalization", f"{cl_analysis.get('personalization_score', 50)}/100")
+                with col_cl3:
+                    st.metric("Impact", f"{cl_analysis.get('impact_score', 50)}/100")
+                with col_cl4:
+                    st.metric("Structure", f"{cl_analysis.get('structure_score', 50)}/100")
+                missing = cl_analysis.get('missing_elements', [])
+                if missing:
+                    st.markdown("**Missing Elements (what to improve):** " + ", ".join(missing[:3]))
             else:
-                st.error("❌ Invalid Premium code.")
-    with col_code2:
-        pro_input = st.text_input("Pro unlock code", type="password", key="workspace_pro_code")
-        if st.button("Apply Pro Code", key="workspace_apply_pro"):
-            if pro_input.strip() == PRO_UNLOCK_CODE:
-                st.session_state.premium = False
-                st.session_state.pro = True
-                st.success("✅ Pro unlocked! Refreshing...")
-                st.rerun()
-            else:
-                st.error("❌ Invalid Pro code.")
+                basic = review_cover_letter_basic(cover_letter_text, st.session_state.primary_role)
+                st.metric("Cover Letter Score", f"{basic.get('overall_score', 50)}/100")
+                st.info(f"**Feedback:** {basic.get('verdict', 'Review complete')}")
+                st.markdown(f"**Improvement Preview:** {basic.get('top_missing', 'Needs stronger alignment')}")
+                st.caption("🔒 **Upgrade to Premium for full dimension scores and detailed improvements**")
+    elif analyze_cl_clicked and cover_letter_text:
+        st.warning("Please provide a cover letter with at least 50 characters.")
+    elif analyze_cl_clicked:
+        st.warning("Please upload or paste a cover letter first.")
 
-    st.subheader("📄 Reports")
-    if st.session_state.premium or st.session_state.pro:
+    # Upgrade & Reports (conditional)
+    if not st.session_state.premium and not st.session_state.pro:
+        st.markdown("---")
+        st.subheader("🚀 Upgrade Your Career Toolkit")
+        col_card1, col_card2 = st.columns(2)
+        with col_card1:
+            st.markdown("""
+            <div style="background: white; border-radius: 20px; padding: 1.5rem; text-align: center; border: 1px solid #e2e8f0; color: #0f172a;">
+                <div style="display: inline-block; background-color: #6C63FF; color: white; padding: 0.2rem 1rem; border-radius: 30px; font-size: 0.7rem; margin-bottom: 1rem;">⭐ MOST POPULAR</div>
+                <div style="font-size: 1.5rem; font-weight: 700; color: #0f172a;">Premium</div>
+                <div style="font-size: 2rem; font-weight: 800; color: #4A90E2; margin: 1rem 0;">$7<span style="font-size:1rem;">/month</span></div>
+                <div style="font-size: 1.2rem; margin-bottom: 1rem; color: #0f172a;">or $29 lifetime</div>
+                <div style="text-align: left; margin: 1rem 0; color: #0f172a;">
+                    <div>✅ Recruiter verdict</div>
+                    <div>✅ Missing keywords & rewrite suggestions</div>
+                    <div>✅ 10 job matches + match scores</div>
+                    <div>✅ Full cover‑letter diagnostics</div>
+                    <div>✅ ATS checklist & PDF report</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("⭐ Premium Monthly $7", use_container_width=True):
+                try:
+                    session = stripe.checkout.Session.create(
+                        payment_method_types=["card"],
+                        line_items=[{"price": STRIPE_PRICE_ID_PREMIUM_MONTHLY, "quantity": 1}],
+                        mode="subscription",
+                        success_url=APP_URL + "?success_premium_monthly=true",
+                        cancel_url=APP_URL,
+                    )
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+                except Exception as e:
+                    st.error(f"Payment error: {e}")
+            if st.button("⭐ Premium Lifetime $29", use_container_width=True):
+                try:
+                    session = stripe.checkout.Session.create(
+                        payment_method_types=["card"],
+                        line_items=[{"price": STRIPE_PRICE_ID_PREMIUM_LIFETIME, "quantity": 1}],
+                        mode="payment",
+                        success_url=APP_URL + "?success_premium_lifetime=true",
+                        cancel_url=APP_URL,
+                    )
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+                except Exception as e:
+                    st.error(f"Payment error: {e}")
+
+        with col_card2:
+            st.markdown("""
+            <div style="background: white; border-radius: 20px; padding: 1.5rem; text-align: center; border: 1px solid #e2e8f0; color: #0f172a;">
+                <div style="display: inline-block; background-color: #6C63FF; color: white; padding: 0.2rem 1rem; border-radius: 30px; font-size: 0.7rem; margin-bottom: 1rem;">🚀 BEST VALUE</div>
+                <div style="font-size: 1.5rem; font-weight: 700; color: #0f172a;">Pro</div>
+                <div style="font-size: 2rem; font-weight: 800; color: #4A90E2; margin: 1rem 0;">$15<span style="font-size:1rem;">/month</span></div>
+                <div style="font-size: 1.2rem; margin-bottom: 1rem; color: #0f172a;">or $49 lifetime</div>
+                <div style="text-align: left; margin: 1rem 0; color: #0f172a;">
+                    <div>✅ All Premium features</div>
+                    <div>✅ CV draft generator</div>
+                    <div>✅ Cover letter generator</div>
+                    <div>✅ Signature cleaner</div>
+                    <div>✅ 25+ job matches</div>
+                    <div>✅ Executive intelligence report</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("🚀 Pro Monthly $15", use_container_width=True):
+                try:
+                    session = stripe.checkout.Session.create(
+                        payment_method_types=["card"],
+                        line_items=[{"price": STRIPE_PRICE_ID_PRO_MONTHLY, "quantity": 1}],
+                        mode="subscription",
+                        success_url=APP_URL + "?success_pro_monthly=true",
+                        cancel_url=APP_URL,
+                    )
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+                except Exception as e:
+                    st.error(f"Payment error: {e}")
+            if st.button("🚀 Pro Lifetime $49", use_container_width=True):
+                try:
+                    session = stripe.checkout.Session.create(
+                        payment_method_types=["card"],
+                        line_items=[{"price": STRIPE_PRICE_ID_PRO_LIFETIME, "quantity": 1}],
+                        mode="payment",
+                        success_url=APP_URL + "?success_pro_lifetime=true",
+                        cancel_url=APP_URL,
+                    )
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+                except Exception as e:
+                    st.error(f"Payment error: {e}")
+
+        st.markdown("---")
+        st.subheader("🔓 Already have a code?")
+        col_code1, col_code2 = st.columns(2)
+        with col_code1:
+            premium_input = st.text_input("Premium unlock code", type="password", key="workspace_premium_code")
+            if st.button("Apply Premium Code", key="workspace_apply_premium"):
+                if premium_input.strip() == PREMIUM_UNLOCK_CODE:
+                    st.session_state.premium = True
+                    st.session_state.pro = False
+                    st.success("✅ Premium unlocked! Refreshing...")
+                    st.rerun()
+                else:
+                    st.error("❌ Invalid Premium code.")
+        with col_code2:
+            pro_input = st.text_input("Pro unlock code", type="password", key="workspace_pro_code")
+            if st.button("Apply Pro Code", key="workspace_apply_pro"):
+                if pro_input.strip() == PRO_UNLOCK_CODE:
+                    st.session_state.premium = False
+                    st.session_state.pro = True
+                    st.success("✅ Pro unlocked! Refreshing...")
+                    st.rerun()
+                else:
+                    st.error("❌ Invalid Pro code.")
+
+        st.subheader("📄 Reports")
+        st.info("🔒 **PDF report and ATS checklist are available after upgrading to Premium or Pro.**")
+
+    elif st.session_state.premium and not st.session_state.pro:
+        st.markdown("---")
+        st.subheader("📈 Upgrade to Pro")
+        st.info("You are on Premium. Upgrade to Pro to unlock CV draft generator, cover letter generator, signature cleaner, 25+ job matches, and executive report.")
+        col_up_btn1, col_up_btn2 = st.columns(2)
+        with col_up_btn1:
+            if st.button("🚀 Upgrade to Pro Monthly $15", use_container_width=True):
+                try:
+                    session = stripe.checkout.Session.create(
+                        payment_method_types=["card"],
+                        line_items=[{"price": STRIPE_PRICE_ID_PRO_MONTHLY, "quantity": 1}],
+                        mode="subscription",
+                        success_url=APP_URL + "?success_pro_monthly=true",
+                        cancel_url=APP_URL,
+                    )
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+                except Exception as e:
+                    st.error(f"Payment error: {e}")
+        with col_up_btn2:
+            if st.button("🚀 Upgrade to Pro Lifetime $49", use_container_width=True):
+                try:
+                    session = stripe.checkout.Session.create(
+                        payment_method_types=["card"],
+                        line_items=[{"price": STRIPE_PRICE_ID_PRO_LIFETIME, "quantity": 1}],
+                        mode="payment",
+                        success_url=APP_URL + "?success_pro_lifetime=true",
+                        cancel_url=APP_URL,
+                    )
+                    st.markdown(f"<a href='{session.url}' target='_blank'>Pay securely</a>", unsafe_allow_html=True)
+                except Exception as e:
+                    st.error(f"Payment error: {e}")
+        st.markdown("---")
+        st.subheader("📄 Reports")
         with st.spinner("Generating full analysis for report..."):
             full_analysis = analyze_cv_cached(st.session_state.cv_text, full=True)
         pdf_data = generate_pdf_report(full_analysis)
         st.download_button("📥 Download Executive PDF Report", pdf_data, file_name="executive_report.pdf")
         checklist_text = generate_ats_checklist(full_analysis)
         st.download_button("📋 Download ATS Optimization Checklist", checklist_text, file_name="ats_checklist.txt")
-    else:
-        st.info("🔒 **PDF report and ATS checklist are available after upgrading to Premium or Pro.**")
 
+    else:  # Pro user
+        st.markdown("---")
+        st.subheader("📄 Reports")
+        with st.spinner("Generating full analysis for report..."):
+            full_analysis = analyze_cv_cached(st.session_state.cv_text, full=True)
+        pdf_data = generate_pdf_report(full_analysis)
+        st.download_button("📥 Download Executive PDF Report", pdf_data, file_name="executive_report.pdf")
+        checklist_text = generate_ats_checklist(full_analysis)
+        st.download_button("📋 Download ATS Optimization Checklist", checklist_text, file_name="ats_checklist.txt")
+
+    # Signature cleaner (Pro only)
     if st.session_state.pro:
         st.subheader("✍️ Signature Cleaner")
         uploaded_sig = st.file_uploader("Upload signature image (JPG, PNG, or JPEG)", type=["jpg", "jpeg", "png"], key="sig_upload")
