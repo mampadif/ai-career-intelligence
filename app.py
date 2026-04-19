@@ -18,20 +18,32 @@ import numpy as np
 # ---------------------------
 st.set_page_config(page_title="AI Career Intelligence", page_icon="📈", layout="wide")
 
+# Required secrets
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 STRIPE_SECRET_KEY = st.secrets["STRIPE_SECRET_KEY"]
 STRIPE_PRICE_ID_PREMIUM_MONTHLY = st.secrets["STRIPE_PRICE_ID_PREMIUM_MONTHLY"]
 STRIPE_PRICE_ID_PREMIUM_LIFETIME = st.secrets["STRIPE_PRICE_ID_PREMIUM_LIFETIME"]
 STRIPE_PRICE_ID_PRO_MONTHLY = st.secrets["STRIPE_PRICE_ID_PRO_MONTHLY"]
 STRIPE_PRICE_ID_PRO_LIFETIME = st.secrets["STRIPE_PRICE_ID_PRO_LIFETIME"]
-
-# Adzuna credentials – ensure these are set correctly in secrets
-ADZUNA_APP_ID = st.secrets["ADZUNA_APP_ID"]
-ADZUNA_APP_KEY = st.secrets["ADZUNA_APP_KEY"]
-
 APP_URL = st.secrets["APP_URL"]
 PREMIUM_UNLOCK_CODE = st.secrets["PREMIUM_UNLOCK_CODE"].strip()
 PRO_UNLOCK_CODE = st.secrets["PRO_UNLOCK_CODE"].strip()
+
+# Adzuna credentials with backward compatibility
+ADZUNA_APP_ID = st.secrets.get("ADZUNA_APP_ID")
+if not ADZUNA_APP_ID:
+    st.error("❌ Missing ADZUNA_APP_ID in secrets. Please add it to your secrets.toml.")
+    st.stop()
+
+# Try to get ADZUNA_APP_KEY first, fallback to JOB_API_KEY (older name)
+ADZUNA_APP_KEY = st.secrets.get("ADZUNA_APP_KEY")
+if not ADZUNA_APP_KEY:
+    ADZUNA_APP_KEY = st.secrets.get("JOB_API_KEY")
+    if ADZUNA_APP_KEY:
+        st.warning("⚠️ Using JOB_API_KEY as Adzuna key. Consider renaming to ADZUNA_APP_KEY.")
+    else:
+        st.error("❌ Missing Adzuna API key. Add ADZUNA_APP_KEY or JOB_API_KEY to secrets.")
+        st.stop()
 
 # Optional: RapidAPI key for JSearch fallback
 RAPIDAPI_KEY = st.secrets.get("RAPIDAPI_KEY", "")
@@ -57,7 +69,7 @@ COUNTRY_MAP = {
 }
 
 # ---------------------------
-# 2. Custom CSS (dark mode friendly)
+# 2. Custom CSS (unchanged)
 # ---------------------------
 st.markdown("""
 <style>
@@ -128,7 +140,7 @@ body { background-color: #f8fafc; font-family: 'Inter', sans-serif; color: #0f17
 """, unsafe_allow_html=True)
 
 # ---------------------------
-# 3. Session State
+# 3. Session State (unchanged)
 # ---------------------------
 if "premium" not in st.session_state:
     st.session_state.premium = False
@@ -174,7 +186,7 @@ if "success_pro_lifetime" in st.query_params:
     st.session_state.page = "workspace"
 
 # ---------------------------
-# 4. Helper Functions
+# 4. Helper Functions (all functions from previous version with fixes)
 # ---------------------------
 def extract_text_from_file(uploaded_file):
     if uploaded_file.name.endswith(".pdf"):
@@ -701,7 +713,7 @@ def generate_job_specific_cover_letter(cv_text, job_title, company, job_descript
     return response.text
 
 # ---------------------------
-# 5. Intro Page
+# 5. Intro Page (unchanged)
 # ---------------------------
 def intro_page():
     st.markdown("""
@@ -804,7 +816,7 @@ def intro_page():
                     st.error("❌ Invalid Pro code.")
 
 # ---------------------------
-# 6. Workspace Page
+# 6. Workspace Page (unchanged from previous complete version)
 # ---------------------------
 def workspace_page():
     if st.session_state.pro:
