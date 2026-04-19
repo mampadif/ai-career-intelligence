@@ -51,12 +51,12 @@ COUNTRY_MAP = {
 }
 
 # ---------------------------
-# 2. Custom CSS
+# 2. Custom CSS (dark mode friendly, with proper spacing)
 # ---------------------------
 st.markdown("""
 <style>
 body { background-color: #f8fafc; font-family: 'Inter', sans-serif; color: #0f172a; }
-.block-container { padding-top: 1rem; padding-bottom: 2rem; }
+.block-container { padding-top: 2rem; padding-bottom: 2rem; }
 .hero {
     text-align: center;
     padding: 2rem 1rem;
@@ -115,15 +115,6 @@ body { background-color: #f8fafc; font-family: 'Inter', sans-serif; color: #0f17
 .tier-badge-free { background-color: #6c757d; color: white; }
 .tier-badge-premium { background-color: #4A90E2; color: white; }
 .tier-badge-pro { background: linear-gradient(90deg, #6C63FF, #4A90E2); color: white; }
-.persistent-banner {
-    background-color: #e0f2fe;
-    padding: 10px;
-    border-radius: 12px;
-    margin-bottom: 20px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
 @media (prefers-color-scheme: dark) {
     body { background-color: #0f172a; color: #e2e8f0; }
     .hero { background: linear-gradient(135deg, #1e293b, #0f172a); }
@@ -135,7 +126,6 @@ body { background-color: #f8fafc; font-family: 'Inter', sans-serif; color: #0f17
     .action-title { color: #f1f5f9; }
     .footer { border-top-color: #334155; color: #94a3b8; }
     .stButton > button { background: linear-gradient(90deg, #3b82f6, #8b5cf6); }
-    .persistent-banner { background-color: #1e293b; border: 1px solid #334155; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -186,7 +176,7 @@ if "success_pro_lifetime" in st.query_params:
     st.session_state.page = "workspace"
 
 # ---------------------------
-# 4. Helper Functions (full set, with strict date filtering)
+# 4. Helper Functions (full set)
 # ---------------------------
 def extract_text_from_file(uploaded_file):
     if uploaded_file.name.endswith(".pdf"):
@@ -593,7 +583,7 @@ def generate_job_specific_cover_letter(cv_text, job_title, company, job_descript
     return response.text
 
 # ---------------------------
-# 5. Intro Page (unchanged)
+# 5. Intro Page (Plan Selection + Code Entry)
 # ---------------------------
 def intro_page():
     st.markdown("""
@@ -696,30 +686,18 @@ def intro_page():
                     st.error("❌ Invalid Pro code.")
 
 # ---------------------------
-# 6. Workspace Page (with persistent tier banner and easy code entry)
+# 6. Workspace Page (with collapsible job descriptions and clear tier indicator)
 # ---------------------------
 def workspace_page():
-    # Persistent tier banner at the top
-    tier_display = ""
-    upgrade_link = ""
+    # Tier indicator (simple and always visible)
     if st.session_state.pro:
-        tier_display = "🚀 Pro Tier Active"
-        upgrade_link = None
+        st.info("🚀 **Pro Tier Active** – Full application engine unlocked")
     elif st.session_state.premium:
-        tier_display = "⭐ Premium Tier Active"
-        upgrade_link = "Upgrade to Pro"
+        st.info("⭐ **Premium Tier Active** – Improvement tools unlocked")
     else:
-        tier_display = "🔓 Free Tier"
-        upgrade_link = "Upgrade to Premium or Pro"
+        st.info("🔓 **Free Tier** – Basic scores and 1 job match. Upgrade to unlock more.")
 
-    st.markdown(f"""
-    <div class="persistent-banner">
-        <div><strong>{tier_display}</strong></div>
-        <div>{f'<a href="#upgrade" style="text-decoration: none; background-color: #6C63FF; color: white; padding: 6px 12px; border-radius: 20px;">{upgrade_link}</a>' if upgrade_link else ''}</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # If free, show easy code entry expander
+    # Code entry for free users
     if not st.session_state.premium and not st.session_state.pro:
         with st.expander("🔓 Enter unlock code here", expanded=False):
             col_code1, col_code2 = st.columns(2)
@@ -839,7 +817,7 @@ def workspace_page():
                     st.info("🚀 Upgrade to Pro for CV draft generator")
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # Find Jobs card (strict date filtering)
+    # Find Jobs card (with collapsible job descriptions)
     with col_mid:
         with st.container():
             st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -907,8 +885,10 @@ def workspace_page():
                         raw_desc = job.get('description', '')
                         clean_desc = re.sub(r'<[^>]+>', '', raw_desc)
                         clean_desc = re.sub(r'\s+', ' ', clean_desc).strip()
-                        st.markdown(clean_desc[:200] + ("..." if len(clean_desc) > 200 else ""))
-
+                        # Collapsible description
+                        with st.expander("📄 View job description"):
+                            st.write(clean_desc)
+                        # Match score button
                         score_key = f"score_{idx}"
                         if st.session_state.premium or st.session_state.pro:
                             if st.button(f"🎯 Show Match Score", key=f"match_btn_{idx}"):
@@ -1032,7 +1012,7 @@ def workspace_page():
     elif analyze_cl_clicked:
         st.warning("Please upload or paste a cover letter first.")
 
-    # Upgrade & Reports (conditional, with anchor for banner link)
+    # Upgrade & Reports (conditional)
     st.markdown('<div id="upgrade"></div>', unsafe_allow_html=True)
     if not st.session_state.premium and not st.session_state.pro:
         st.markdown("---")
