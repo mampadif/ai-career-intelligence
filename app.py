@@ -326,7 +326,7 @@ def parse_adzuna_date(date_str):
         return None
 
 def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
-    """Enhanced Adzuna fetcher with detailed logging and error handling."""
+    """Enhanced Adzuna fetcher with relaxed date filter and diagnostics."""
     url = f"https://api.adzuna.com/v1/api/jobs/{country_code}/search/1"
     params = {
         "app_id": ADZUNA_APP_ID,
@@ -337,12 +337,7 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
     if location_refine and location_refine.strip():
         params["where"] = location_refine.strip()
     
-    log_info = {
-        "status": None,
-        "error": None,
-        "raw_count": 0,
-        "active_count": 0
-    }
+    log_info = {"status": None, "error": None, "raw_count": 0, "active_count": 0}
     
     try:
         resp = requests.get(url, params=params, timeout=10)
@@ -379,7 +374,8 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
             })
         
         today = datetime.now().date()
-        cutoff = datetime.now() - timedelta(days=30)
+        cutoff = datetime.now() - timedelta(days=60)  # Relaxed from 30 to 60 days
+        
         active = []
         for job in formatted:
             keep = False
@@ -387,14 +383,13 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
                 close_date = parse_adzuna_date(job['closing_date'])
                 if close_date and close_date.date() >= today:
                     keep = True
-            else:
-                posted = job.get('created')
-                if posted:
-                    posted_date = parse_adzuna_date(posted)
-                    if posted_date and posted_date >= cutoff:
-                        keep = True
-                else:
+            elif job.get('created'):
+                posted_date = parse_adzuna_date(job['created'])
+                if posted_date and posted_date >= cutoff:
                     keep = True
+            else:
+                # No date info → keep it (better to show than hide)
+                keep = True
             if keep:
                 active.append(job)
         log_info["active_count"] = len(active)
@@ -411,7 +406,6 @@ def get_jobs_from_jsearch(query, country_code, location_refine, limit=5):
         return [], {"error": "RAPIDAPI_KEY not configured"}
     
     url = "https://jsearch.p.rapidapi.com/search"
-    # Map country codes to JSearch country param (simplified)
     country_param = country_code.upper()
     querystring = {
         "query": f"{query} {location_refine}" if location_refine else query,
@@ -447,7 +441,39 @@ def get_jobs_from_jsearch(query, country_code, location_refine, limit=5):
     except Exception as e:
         return [], {"error": str(e)}
 
-def get_job_matches(cv_text, analysis, manual_query, country_name, country_code, location_refine, limit=5):
+@st.cache_data(ttl=3600)
+def get_alternative_job_titles(cv_text, primary_role):
+    """
+    Ask Gemini to suggest 3-5 real alternative job titles that match the candidate's profile.
+    Returns a list of strings (max 5).
+    """
+    prompt = f"""
+    You are a career expert. Based on the CV below and the primary job title '{primary_role}',
+    suggest 3 to 5 alternative job titles that are commonly used in the industry and would be relevant for this candidate.
+    
+    IMPORTANT:
+    - Only return real, existing job titles. Do NOT make up fake titles.
+    - Return ONLY a JSON array of strings. Example: ["Accounting Clerk", "Finance Assistant", "Bookkeeper"]
+    - Do not include explanations.
+    
+    CV:
+    {cv_text[:6000]}
+    """
+    try:
+        response = model.generate_content(prompt)
+        raw = clean_json_response(response.text)
+        alternatives = json.loads(raw)
+        if isinstance(alternatives, list) and len(alternatives) > 0:
+            unique_titles = []
+            for title in alternatives:
+                if title.lower() != primary_role.lower() and title not in unique_titles:
+                    unique_titles.append(title)
+            return unique_titles[:5]
+    except:
+        pass
+    return []
+
+def get_job_matches(cv_text, analysis, manual_query, country_name, country_code, location_refine, limit=5, use_alternatives=True):
     target_roles = analysis.get("target_roles", [])
     
     if manual_query and len(manual_query.strip()) > 2:
@@ -462,8 +488,8 @@ def get_job_matches(cv_text, analysis, manual_query, country_name, country_code,
     
     if not query or len(query) < 3:
         query = "Business Analyst"
-        source = "fallback (no specific title extracted)"
-        st.warning(f"⚠️ Could not determine a job title from your CV. Using '{query}' as fallback.")
+        source = "fallback"
+        st.warning(f"⚠️ Using fallback job title: '{query}'")
     
     original_query = query
     if any(word in query.lower() for word in ["head", "director", "chief", "vp", "vice president", "senior director"]):
@@ -477,58 +503,62 @@ def get_job_matches(cv_text, analysis, manual_query, country_name, country_code,
     if "," in query:
         query = query.split(",")[0].strip()
     
-    st.success(f"🎯 Searching for: **{query}** (from {source}) in {country_name if country_name != 'Other' else country_code.upper()}")
+    # --- Get alternative titles from Gemini ---
+    search_queries = [query]
+    if use_alternatives and not manual_query:
+        with st.spinner("🧠 Generating related job titles to expand search..."):
+            alternatives = get_alternative_job_titles(cv_text, query)
+            if alternatives:
+                search_queries.extend(alternatives)
+                st.success(f"🔎 Also searching for: {', '.join(alternatives)}")
+    
+    st.success(f"🎯 Primary search: **{query}** (from {source}) in {country_name}")
     
     adzuna_supported = ["us", "gb", "ca", "au", "de", "fr", "in", "za"]
+    all_jobs = []
     
-    # Try Adzuna first
-    jobs = []
-    log_info = {}
-    if country_code in adzuna_supported:
-        jobs, log_info = get_jobs_from_adzuna(query, country_code, location_refine, limit)
-        if not jobs:
-            # Show diagnostic info in an expander
+    # Determine per-query limit (allocate proportionally)
+    per_query_limit = max(3, limit // len(search_queries) + 1)
+    
+    for q in search_queries:
+        if country_code in adzuna_supported:
+            jobs, log_info = get_jobs_from_adzuna(q, country_code, location_refine, per_query_limit)
+            if jobs:
+                all_jobs.extend(jobs)
+            # Optionally show diagnostics for each query (can be noisy)
+        elif RAPIDAPI_KEY:
+            fallback_jobs, _ = get_jobs_from_jsearch(q, country_code, location_refine, per_query_limit)
+            if fallback_jobs:
+                all_jobs.extend(fallback_jobs)
+        else:
+            # Unsupported country without fallback
+            pass
+    
+    unique_jobs = deduplicate_jobs(all_jobs)[:limit]
+    
+    if not unique_jobs:
+        st.warning(f"No active jobs found for any of the searched titles.")
+        # Show diagnostic for primary query if no results
+        if country_code in adzuna_supported:
+            _, log_info = get_jobs_from_adzuna(query, country_code, location_refine, 5)
             with st.expander("🔧 Adzuna API Diagnostics", expanded=False):
                 st.write(f"**Status Code:** {log_info.get('status')}")
                 st.write(f"**Raw jobs returned:** {log_info.get('raw_count')}")
                 st.write(f"**Active jobs after date filter:** {log_info.get('active_count')}")
                 if log_info.get('error'):
                     st.error(f"**Error:** {log_info['error']}")
-            st.warning(f"No active {query} jobs found via Adzuna.")
-            
-            # Try JSearch fallback if configured
-            if RAPIDAPI_KEY:
-                with st.spinner("Trying backup job source (JSearch)..."):
-                    fallback_jobs, fb_log = get_jobs_from_jsearch(query, country_code, location_refine, limit)
-                    if fallback_jobs:
-                        st.success(f"✅ Found {len(fallback_jobs)} jobs via backup source!")
-                        jobs = fallback_jobs
-                    else:
-                        st.info("Backup source also returned no results.")
-            
-            # Always show alternative links
-            encoded_query = query.replace(' ', '+')
-            encoded_location = location_refine.replace(' ', '+') if location_refine else country_code.upper()
-            st.info(f"💡 **Try these real job boards:**\n"
-                    f"- [Indeed](https://www.indeed.com/jobs?q={encoded_query}&l={encoded_location})\n"
-                    f"- [LinkedIn](https://www.linkedin.com/jobs/search?keywords={query.replace(' ', '%20')}&location={location_refine or country_name})\n"
-                    f"- [Glassdoor](https://www.glassdoor.com/Job/jobs.htm?sc.keyword={encoded_query}&locT=C&locId=&locKeyword={encoded_location})\n"
-                    f"- Or adjust your job title (e.g., '{query}' → 'AI Researcher', 'Machine Learning Lead')")
+        # Fallback links
+        encoded_query = query.replace(' ', '+')
+        encoded_location = location_refine.replace(' ', '+') if location_refine else country_code.upper()
+        st.info(f"💡 **Try these real job boards:**\n"
+                f"- [Indeed](https://www.indeed.com/jobs?q={encoded_query}&l={encoded_location})\n"
+                f"- [LinkedIn](https://www.linkedin.com/jobs/search?keywords={query.replace(' ', '%20')}&location={location_refine or country_name})\n"
+                f"- [Glassdoor](https://www.glassdoor.com/Job/jobs.htm?sc.keyword={encoded_query}&locT=C&locId=&locKeyword={encoded_location})\n"
+                f"- Or adjust your job title (e.g., '{query}' → 'AI Researcher', 'Machine Learning Lead')")
     else:
-        st.warning(f"📢 Direct job listings are not yet available for {country_name}.")
-        st.markdown(f"**Try these global job platforms:**\n"
-                    f"- [Indeed Worldwide](https://www.indeed.com/worldwide?q={query.replace(' ', '+')})\n"
-                    f"- [LinkedIn Jobs](https://www.linkedin.com/jobs/search?keywords={query.replace(' ', '%20')}&location={location_refine or country_name})\n"
-                    f"- [Google Jobs](https://www.google.com/search?q={query.replace(' ', '+')}+jobs+{location_refine or country_name})")
-        # Optionally try JSearch even for unsupported countries
-        if RAPIDAPI_KEY:
-            with st.spinner("Trying global job search via JSearch..."):
-                fallback_jobs, _ = get_jobs_from_jsearch(query, country_code, location_refine, limit)
-                if fallback_jobs:
-                    st.success(f"✅ Found {len(fallback_jobs)} jobs via backup source!")
-                    jobs = fallback_jobs
+        st.success(f"✅ Found {len(unique_jobs)} relevant job(s)")
     
-    return jobs
+    return unique_jobs
 
 @st.cache_data(ttl=3600)
 def score_job_match(cv_text, job_title, job_description=""):
@@ -754,7 +784,7 @@ def intro_page():
                     st.error("❌ Invalid Pro code.")
 
 # ---------------------------
-# 6. Workspace Page (with enhanced job search diagnostics)
+# 6. Workspace Page
 # ---------------------------
 def workspace_page():
     if st.session_state.pro:
@@ -849,7 +879,7 @@ def workspace_page():
     st.markdown("---")
     col_left, col_mid, col_right = st.columns(3)
 
-    # Improve CV card (unchanged)
+    # Improve CV card
     with col_left:
         with st.container():
             st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -883,7 +913,7 @@ def workspace_page():
                     st.info("🚀 Upgrade to Pro for CV draft generator")
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # Find Jobs card (with enhanced diagnostics)
+    # Find Jobs card (with Gemini title expansion)
     with col_mid:
         with st.container():
             st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -897,7 +927,10 @@ def workspace_page():
                 location_refine = st.text_input("City / Region", placeholder="e.g., London, Nairobi, Remote", key="location_input")
             manual_query = st.text_input("Override job title (optional)", placeholder=f"Leave empty to use {st.session_state.primary_role}", key="manual_query_input")
             
-            # Debug toggle (can be removed after testing)
+            # Option to disable Gemini expansion (default True)
+            use_expansion = st.checkbox("Expand search with related job titles (AI)", value=True)
+            
+            # Debug toggle
             show_debug = st.checkbox("Show API diagnostics", value=False)
             
             search_clicked = st.button("🔍 Search for Jobs", use_container_width=True, type="primary")
@@ -919,7 +952,8 @@ def workspace_page():
                             country_display,
                             country_code,
                             location_refine,
-                            limit=job_limit
+                            limit=job_limit,
+                            use_alternatives=use_expansion
                         )
                         st.session_state.jobs = jobs
                         st.session_state.match_scores = {}
@@ -993,7 +1027,7 @@ def workspace_page():
                         st.markdown("---")
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # Saved Jobs card (unchanged)
+    # Saved Jobs card
     with col_right:
         with st.container():
             st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -1014,7 +1048,7 @@ def workspace_page():
                     st.markdown("---")
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # Cover Letter Feedback Section (unchanged)
+    # Cover Letter Feedback Section
     st.markdown("---")
     st.subheader("📝 Cover Letter Feedback")
     st.caption("Upload or paste your cover letter to get detailed recruiter feedback.")
