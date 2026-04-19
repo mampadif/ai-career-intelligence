@@ -390,77 +390,57 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
     except Exception as e:
         return []
 
-def get_jobs_from_gemini_search(cv_text, job_title, location, limit=5):
-    try:
-        prompt = f"""
-        Find {limit} recent job postings for a {job_title} position in {location}.
-        Return ONLY valid JSON:
-        {{
-            "jobs": [
-                {{
-                    "job_title": "...",
-                    "company_name": "...",
-                    "location": "...",
-                    "apply_url": "...",
-                    "brief_description": "...",
-                    "date_posted": "..."
-                }}
-            ]
-        }}
-        """
-        response = model.generate_content(prompt)
-        raw = clean_json_response(response.text)
-        result = json.loads(raw)
-        jobs = result.get("jobs", [])
-        return [{
-            "title": j.get("job_title", "Untitled"),
-            "company": j.get("company_name", "Unknown"),
-            "location": j.get("location", location),
-            "url": j.get("apply_url", "#"),
-            "description": j.get("brief_description", ""),
-            "date_display": f"📅 {j.get('date_posted', 'Recently posted')}",
-            "closing_date": None,
-            "created": j.get('date_posted'),
-            "is_expired": False
-        } for j in jobs]
-    except:
-        return []
-
 def get_job_matches(cv_text, analysis, manual_query, country_name, country_code, location_refine, limit=5):
     target_roles = analysis.get("target_roles", [])
-    if target_roles and target_roles[0] != "N/A":
+    if manual_query and len(manual_query.strip()) > 2:
+        query = manual_query.strip()
+        source = "manual override"
+    elif target_roles and target_roles[0] != "N/A":
         query = target_roles[0]
         source = "CV analysis"
     else:
         query = generate_job_query(cv_text).strip()
         source = "CV text extraction"
-    if manual_query and len(manual_query.strip()) > 2:
-        st.warning(f"⚠️ Overriding CV-detected role '{query}' with '{manual_query}'. This may return less relevant jobs.")
-        query = manual_query.strip()
-        source = "manual override"
+    
+    original_query = query
+    # Broaden the query if it's too senior-specific
+    if any(word in query.lower() for word in ["head", "director", "chief", "vp", "vice president", "senior director"]):
+        words = query.split()
+        if words[0].lower() in ["head", "director", "chief", "vp"]:
+            broader = " ".join(words[1:]).strip()
+            if broader and len(broader) > 3:
+                query = broader
+                st.info(f"🔍 Broadened search from '{original_query}' to '{query}' for more results.")
+    
     if "," in query:
         query = query.split(",")[0].strip()
     if not query or len(query) < 3:
         st.error("Could not determine a valid job title from your CV.")
         return []
+    
     st.success(f"🎯 Searching for: **{query}** (from {source}) in {country_name if country_name != 'Other' else country_code.upper()}")
+    
     adzuna_supported = ["us", "gb", "ca", "au", "de", "fr", "in", "za"]
     if country_code in adzuna_supported:
         jobs = get_jobs_from_adzuna(query, country_code, location_refine, limit)
         if not jobs:
-            st.warning(f"No active {query} jobs found via Adzuna. Trying expanded search...")
-            search_location = f"{location_refine}, {country_name}" if location_refine else country_name
-            jobs = get_jobs_from_gemini_search(cv_text, query, search_location, limit)
+            st.warning(f"No active {query} jobs found via Adzuna.")
+            # Show helpful alternative links
+            encoded_query = query.replace(' ', '+')
+            encoded_location = location_refine.replace(' ', '+') if location_refine else country_code.upper()
+            st.info(f"💡 **Try these real job boards:**\n"
+                    f"- [Indeed](https://www.indeed.com/jobs?q={encoded_query}&l={encoded_location})\n"
+                    f"- [LinkedIn](https://www.linkedin.com/jobs/search?keywords={query.replace(' ', '%20')}&location={location_refine or country_name})\n"
+                    f"- [Glassdoor](https://www.glassdoor.com/Job/jobs.htm?sc.keyword={encoded_query}&locT=C&locId=&locKeyword={encoded_location})\n"
+                    f"- Or adjust your job title (e.g., '{query}' → 'AI Researcher', 'Machine Learning Lead')")
         return jobs
     else:
-        if not country_name or country_name == "Other":
-            st.error("Please enter a specific country name for 'Other' selection.")
-            return []
-        search_location = f"{location_refine}, {country_name}" if location_refine else country_name
-        jobs = get_jobs_from_gemini_search(cv_text, query, search_location, limit)
-        if not jobs:
-            st.warning(f"No {query} jobs found. Try a different country.")
-        return jobs
+        # For unsupported countries, show alternative resources
+        st.warning(f"No direct job search for {country_name}. Please try these resources:")
+        st.markdown(f"- [Indeed Worldwide](https://www.indeed.com/worldwide?q={query.replace(' ', '+')})\n"
+                    f"- [LinkedIn Jobs](https://www.linkedin.com/jobs/search?keywords={query.replace(' ', '%20')}&location={location_refine or country_name})\n"
+                    f"- [Google Jobs](https://www.google.com/search?q={query.replace(' ', '+')}+jobs+{location_refine or country_name})")
+        return []
 
 @st.cache_data(ttl=3600)
 def score_job_match(cv_text, job_title, job_description=""):
@@ -686,7 +666,7 @@ def intro_page():
                     st.error("❌ Invalid Pro code.")
 
 # ---------------------------
-# 6. Workspace Page (with collapsible job descriptions and clear tier indicator)
+# 6. Workspace Page (with collapsible job descriptions and helpful fallback)
 # ---------------------------
 def workspace_page():
     # Tier indicator (simple and always visible)
@@ -817,7 +797,7 @@ def workspace_page():
                     st.info("🚀 Upgrade to Pro for CV draft generator")
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # Find Jobs card (with collapsible job descriptions)
+    # Find Jobs card (with collapsible job descriptions and helpful fallback)
     with col_mid:
         with st.container():
             st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -885,10 +865,9 @@ def workspace_page():
                         raw_desc = job.get('description', '')
                         clean_desc = re.sub(r'<[^>]+>', '', raw_desc)
                         clean_desc = re.sub(r'\s+', ' ', clean_desc).strip()
-                        # Collapsible description
                         with st.expander("📄 View job description"):
                             st.write(clean_desc)
-                        # Match score button
+
                         score_key = f"score_{idx}"
                         if st.session_state.premium or st.session_state.pro:
                             if st.button(f"🎯 Show Match Score", key=f"match_btn_{idx}"):
@@ -1190,7 +1169,7 @@ def workspace_page():
                     st.image(transparent, width=200)
                     st.download_button("📥 Download Transparent PNG", transparent, file_name="signature_clean.png", mime="image/png")
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Error processing image: {e}")
 
 # ---------------------------
 # 7. Main Router
