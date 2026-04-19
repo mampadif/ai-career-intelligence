@@ -31,7 +31,7 @@ PREMIUM_UNLOCK_CODE = st.secrets["PREMIUM_UNLOCK_CODE"].strip()
 PRO_UNLOCK_CODE = st.secrets["PRO_UNLOCK_CODE"].strip()
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-2.5-flash")
+model = genai.GenerativeModel("gemini-2.0-flash")  # Updated to stable model
 stripe.api_key = STRIPE_SECRET_KEY
 
 COUNTRY_MAP = {
@@ -51,7 +51,7 @@ COUNTRY_MAP = {
 }
 
 # ---------------------------
-# 2. Custom CSS (dark mode friendly, with proper spacing)
+# 2. Custom CSS (dark mode friendly)
 # ---------------------------
 st.markdown("""
 <style>
@@ -106,15 +106,6 @@ body { background-color: #f8fafc; font-family: 'Inter', sans-serif; color: #0f17
     box-shadow: 0 4px 12px rgba(108,99,255,0.3);
 }
 .footer { text-align: center; margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid #e2e8f0; color: #64748b; font-size: 0.8rem; }
-.tier-badge-free, .tier-badge-premium, .tier-badge-pro {
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 12px;
-    display: inline-block;
-}
-.tier-badge-free { background-color: #6c757d; color: white; }
-.tier-badge-premium { background-color: #4A90E2; color: white; }
-.tier-badge-pro { background: linear-gradient(90deg, #6C63FF, #4A90E2); color: white; }
 @media (prefers-color-scheme: dark) {
     body { background-color: #0f172a; color: #e2e8f0; }
     .hero { background: linear-gradient(135deg, #1e293b, #0f172a); }
@@ -158,6 +149,7 @@ if "generated_cv" not in st.session_state:
 if "cover_letter_for_job" not in st.session_state:
     st.session_state.cover_letter_for_job = None
 
+# Handle Stripe success redirects
 if "success_premium_monthly" in st.query_params:
     st.session_state.premium = True
     st.query_params.clear()
@@ -176,7 +168,7 @@ if "success_pro_lifetime" in st.query_params:
     st.session_state.page = "workspace"
 
 # ---------------------------
-# 4. Helper Functions (full set)
+# 4. Helper Functions
 # ---------------------------
 def extract_text_from_file(uploaded_file):
     if uploaded_file.name.endswith(".pdf"):
@@ -217,7 +209,7 @@ def analyze_cv(cv_text, full=False):
     - interview_likelihood: "Low","Moderate","High"
     - recruiter_verdict: one sentence explaining the scores
     - experience_level: "Entry","Mid","Senior"
-    - target_roles: list of 2-3
+    - target_roles: list of 2-3 specific job titles
     - top_strengths: list of 2-3
     - top_weaknesses: list of 2-3
 
@@ -233,13 +225,14 @@ def analyze_cv(cv_text, full=False):
     try:
         return json.loads(raw)
     except:
+        # Provide a safe fallback to prevent downstream errors
         return {
             "strength_score": 50,
             "ats_score": 50,
             "interview_likelihood": "Moderate",
             "recruiter_verdict": "Unable to analyze – please try again.",
             "experience_level": "Mid",
-            "target_roles": ["N/A"],
+            "target_roles": ["Business Analyst"],
             "top_strengths": ["Error parsing response"],
             "top_weaknesses": ["Error parsing response"]
         }
@@ -311,7 +304,8 @@ def generate_job_query(cv_text):
     No explanation.
     CV: {cv_text[:6000]}
     """
-    return model.generate_content(prompt).text.strip()
+    response = model.generate_content(prompt)
+    return response.text.strip()
 
 def deduplicate_jobs(jobs):
     seen = set()
@@ -391,7 +385,12 @@ def get_jobs_from_adzuna(query, country_code, location_refine, limit=5):
         return []
 
 def get_job_matches(cv_text, analysis, manual_query, country_name, country_code, location_refine, limit=5):
+    """
+    Returns job matches. Now with improved fallback logic.
+    """
     target_roles = analysis.get("target_roles", [])
+    
+    # Determine query
     if manual_query and len(manual_query.strip()) > 2:
         query = manual_query.strip()
         source = "manual override"
@@ -401,6 +400,12 @@ def get_job_matches(cv_text, analysis, manual_query, country_name, country_code,
     else:
         query = generate_job_query(cv_text).strip()
         source = "CV text extraction"
+    
+    # 🔥 CRITICAL FIX: Ensure we always have a valid query
+    if not query or len(query) < 3:
+        query = "Business Analyst"
+        source = "fallback (no specific title extracted)"
+        st.warning(f"⚠️ Could not determine a job title from your CV. Using '{query}' as fallback.")
     
     original_query = query
     # Broaden the query if it's too senior-specific
@@ -414,13 +419,12 @@ def get_job_matches(cv_text, analysis, manual_query, country_name, country_code,
     
     if "," in query:
         query = query.split(",")[0].strip()
-    if not query or len(query) < 3:
-        st.error("Could not determine a valid job title from your CV.")
-        return []
     
     st.success(f"🎯 Searching for: **{query}** (from {source}) in {country_name if country_name != 'Other' else country_code.upper()}")
     
+    # Adzuna supported countries list (Nigeria, Kenya, etc. are not officially supported)
     adzuna_supported = ["us", "gb", "ca", "au", "de", "fr", "in", "za"]
+    
     if country_code in adzuna_supported:
         jobs = get_jobs_from_adzuna(query, country_code, location_refine, limit)
         if not jobs:
@@ -435,9 +439,10 @@ def get_job_matches(cv_text, analysis, manual_query, country_name, country_code,
                     f"- Or adjust your job title (e.g., '{query}' → 'AI Researcher', 'Machine Learning Lead')")
         return jobs
     else:
-        # For unsupported countries, show alternative resources
-        st.warning(f"No direct job search for {country_name}. Please try these resources:")
-        st.markdown(f"- [Indeed Worldwide](https://www.indeed.com/worldwide?q={query.replace(' ', '+')})\n"
+        # 🔥 IMPROVED: Show clear message and return empty list (user sees alternative links)
+        st.warning(f"📢 Direct job listings are not yet available for {country_name}.")
+        st.markdown(f"**Try these global job platforms:**\n"
+                    f"- [Indeed Worldwide](https://www.indeed.com/worldwide?q={query.replace(' ', '+')})\n"
                     f"- [LinkedIn Jobs](https://www.linkedin.com/jobs/search?keywords={query.replace(' ', '%20')}&location={location_refine or country_name})\n"
                     f"- [Google Jobs](https://www.google.com/search?q={query.replace(' ', '+')}+jobs+{location_refine or country_name})")
         return []
@@ -666,10 +671,10 @@ def intro_page():
                     st.error("❌ Invalid Pro code.")
 
 # ---------------------------
-# 6. Workspace Page (with collapsible job descriptions and helpful fallback)
+# 6. Workspace Page (with all fixes applied)
 # ---------------------------
 def workspace_page():
-    # Tier indicator (simple and always visible)
+    # Tier indicator
     if st.session_state.pro:
         st.info("🚀 **Pro Tier Active** – Full application engine unlocked")
     elif st.session_state.premium:
@@ -714,7 +719,8 @@ def workspace_page():
         analysis = analyze_cv_cached(cv_text, full=False)
         st.session_state.analysis = analysis
         st.session_state.target_roles = analysis.get('target_roles', [])
-        st.session_state.primary_role = st.session_state.target_roles[0] if st.session_state.target_roles and st.session_state.target_roles[0] != "N/A" else "your target role"
+        # Ensure primary_role is never empty
+        st.session_state.primary_role = st.session_state.target_roles[0] if st.session_state.target_roles and st.session_state.target_roles[0] != "N/A" else "Business Analyst"
 
     st.subheader("📝 Recruiter's Verdict on Your CV")
     st.info(f"**{analysis['recruiter_verdict']}**")
@@ -797,7 +803,7 @@ def workspace_page():
                     st.info("🚀 Upgrade to Pro for CV draft generator")
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # Find Jobs card (with collapsible job descriptions and helpful fallback)
+    # Find Jobs card (with debug info and improved fallbacks)
     with col_mid:
         with st.container():
             st.markdown('<div class="action-card">', unsafe_allow_html=True)
@@ -810,6 +816,17 @@ def workspace_page():
             with col_loc2:
                 location_refine = st.text_input("City / Region", placeholder="e.g., London, Nairobi, Remote", key="location_input")
             manual_query = st.text_input("Override job title (optional)", placeholder=f"Leave empty to use {st.session_state.primary_role}", key="manual_query_input")
+            
+            # --- DEBUG BLOCK (uncomment to diagnose issues) ---
+            # with st.expander("🔧 Debug Info", expanded=False):
+            #     st.write("CV text length:", len(st.session_state.get("cv_text", "")))
+            #     st.write("Analysis target roles:", st.session_state.analysis.get("target_roles") if st.session_state.analysis else None)
+            #     st.write("Primary role:", st.session_state.primary_role)
+            #     st.write("Selected country:", country_display, "->", country_code)
+            #     st.write("Manual query override:", manual_query)
+            #     st.write("Tier:", "PRO" if st.session_state.pro else "PREMIUM" if st.session_state.premium else "FREE")
+            # -------------------------------------------------
+
             search_clicked = st.button("🔍 Search for Jobs", use_container_width=True, type="primary")
 
             if st.session_state.pro:
@@ -822,7 +839,15 @@ def workspace_page():
             if search_clicked:
                 with st.spinner("Searching for jobs (only active with future closing dates)..."):
                     try:
-                        jobs = get_job_matches(st.session_state.cv_text, st.session_state.analysis, manual_query, country_display, country_code, location_refine, limit=job_limit)
+                        jobs = get_job_matches(
+                            st.session_state.cv_text,
+                            st.session_state.analysis,
+                            manual_query,
+                            country_display,
+                            country_code,
+                            location_refine,
+                            limit=job_limit
+                        )
                         st.session_state.jobs = jobs
                         st.session_state.match_scores = {}
                         if not jobs:
