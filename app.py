@@ -38,7 +38,7 @@ if not ADZUNA_APP_ID:
 # Try to get ADZUNA_APP_KEY first, fallback to JOB_API_KEY (older name)
 ADZUNA_APP_KEY = st.secrets.get("ADZUNA_APP_KEY")
 if not ADZUNA_APP_KEY:
-    ADZUNA_APP_KEY = st.secrets.get("JOB_API_KEY")
+    ADZUNA_APP_KEY = st.secrets.get("ADZUNA_API_KEY")
     if ADZUNA_APP_KEY:
         st.warning("⚠️ Using JOB_API_KEY as Adzuna key. Consider renaming to ADZUNA_APP_KEY.")
     else:
